@@ -204,6 +204,24 @@ def run_decryption(
 
     logger.info(f"Image reconstructed: {reconstructed_image.shape}")
 
+    # Save masked reconstructed ROI (zero out non-ROI pixels for clean comparison)
+    reconstructed_roi_masked = roi_region_3ch.copy()
+    roi_mask_3d = np.stack([roi_mask_patch] * reconstructed_roi_masked.shape[2], axis=-1) if reconstructed_roi_masked.ndim == 3 else roi_mask_patch
+    reconstructed_roi_masked[roi_mask_3d == 0] = 0
+    roi_masked_path = os.path.join(decrypted_dir, "reconstructed_roi_masked.png")
+    save_image(reconstructed_roi_masked, roi_masked_path)
+    logger.info(f"Reconstructed ROI (masked) saved: {roi_masked_path}")
+
+    # Save decrypted background
+    bg_path = os.path.join(decrypted_dir, "decrypted_background.png")
+    save_image(decrypted_background, bg_path)
+    logger.info(f"Decrypted background saved: {bg_path}")
+
+    # Save ROI mask as image
+    roi_mask_path_out = os.path.join(decrypted_dir, "roi_mask.png")
+    save_image((roi_mask * 255).astype(np.uint8), roi_mask_path_out)
+    logger.info(f"ROI mask saved: {roi_mask_path_out}")
+
     # Save decrypted image
     original_filename = original_info.get("filename", "decrypted.png")
     decrypted_path = os.path.join(decrypted_dir, f"decrypted_{original_filename}")
