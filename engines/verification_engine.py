@@ -77,6 +77,36 @@ def compute_ssim(original: np.ndarray, reconstructed: np.ndarray) -> float:
         return float(ssim_val)
 
 
+def compute_entropy(image: np.ndarray) -> float:
+    """
+    Compute Shannon entropy of an image (averaged across channels).
+
+    Entropy measures the amount of information / randomness in the image.
+    A perfectly encrypted image should have entropy close to 8 bits/pixel.
+
+    Args:
+        image: Image array (H, W) or (H, W, C), uint8.
+
+    Returns:
+        Shannon entropy in bits per pixel (average over channels for colour images).
+    """
+    image = image.astype(np.uint8)
+    if image.ndim == 2:
+        channels = [image]
+    else:
+        channels = [image[:, :, c] for c in range(image.shape[2])]
+
+    entropy_values = []
+    for ch in channels:
+        histogram, _ = np.histogram(ch, bins=256, range=(0, 255))
+        histogram = histogram / histogram.sum()  # normalise to probabilities
+        # Avoid log(0)
+        non_zero = histogram[histogram > 0]
+        entropy_values.append(-float(np.sum(non_zero * np.log2(non_zero))))
+
+    return float(np.mean(entropy_values))
+
+
 def verify_zero_data_loss(
     original: np.ndarray, reconstructed: np.ndarray
 ) -> Dict:
@@ -107,6 +137,8 @@ def verify_zero_data_loss(
     # Compute metrics
     psnr_val = compute_psnr(original, reconstructed)
     ssim_val = compute_ssim(original, reconstructed)
+    entropy_original = compute_entropy(original)
+    entropy_reconstructed = compute_entropy(reconstructed)
 
     # Pixel-perfect comparison
     diff = np.abs(original.astype(np.int16) - reconstructed.astype(np.int16))
@@ -132,6 +164,8 @@ def verify_zero_data_loss(
         "status": "PASS" if is_perfect else "FAIL",
         "psnr_db": psnr_val if psnr_val != float("inf") else "Infinity",
         "ssim": ssim_val,
+        "entropy_original": entropy_original,
+        "entropy_reconstructed": entropy_reconstructed,
         "max_pixel_difference": max_diff,
         "mean_pixel_difference": mean_diff,
         "total_different_pixels": total_diff_pixels,
@@ -144,8 +178,10 @@ def verify_zero_data_loss(
 
     # Log results
     psnr_str = "∞ dB" if psnr_val == float("inf") else f"{psnr_val:.2f} dB"
-    logger.info(f"PSNR  : {psnr_str}")
-    logger.info(f"SSIM  : {ssim_val:.6f}")
+    logger.info(f"PSNR                  : {psnr_str}")
+    logger.info(f"SSIM                  : {ssim_val:.6f}")
+    logger.info(f"Entropy (original)    : {entropy_original:.6f} bits/pixel")
+    logger.info(f"Entropy (reconstructed): {entropy_reconstructed:.6f} bits/pixel")
     logger.info(f"Max pixel difference  : {max_diff}")
     logger.info(f"Mean pixel difference : {mean_diff:.6f}")
     logger.info(f"Different pixels      : {total_diff_pixels}/{np.prod(original.shape)}")
@@ -198,7 +234,9 @@ def generate_verification_report(
         "",
         "--- Metrics ---",
         f"PSNR                  : {report['psnr_db']}",
-        f"SSIM                  : {report['ssim']}",
+        f"SSIM                  : {report['ssim']:.6f}",
+        f"Entropy (original)    : {report.get('entropy_original', 'N/A')}",
+        f"Entropy (reconstructed): {report.get('entropy_reconstructed', 'N/A')}",
         f"Max pixel difference  : {report['max_pixel_difference']}",
         f"Mean pixel difference : {report['mean_pixel_difference']:.6f}",
         f"Different pixels      : {report['total_different_pixels']}/{report['total_pixels']}",
