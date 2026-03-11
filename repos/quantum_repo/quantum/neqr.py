@@ -10,7 +10,7 @@ _cached_simulator = None
 def _get_simulator():
     global _cached_simulator
     if _cached_simulator is None:
-        _cached_simulator = AerSimulator()
+        _cached_simulator = AerSimulator(method='statevector')
     return _cached_simulator
 
 
@@ -69,26 +69,33 @@ def encode_neqr(image):
     return qc
 
 
-def reconstruct_neqr_image(qc, height, width, shots=8192):
+def reconstruct_neqr_image(qc, height, width, shots=None):
+    """Reconstruct NEQR image using statevector simulation (deterministic, no shot noise)."""
 
-    qc_measured = qc.copy()
-    qc_measured.measure_all()
+    qc_sv = qc.copy()
+    qc_sv.save_statevector()
 
     simulator = _get_simulator()
-    compiled = transpile(qc_measured, simulator, optimization_level=0)
-    job = simulator.run(compiled, shots=shots)
-    result = job.result()
-    counts = result.get_counts()
+    compiled = transpile(qc_sv, simulator, optimization_level=0)
+    result = simulator.run(compiled).result()
+    statevector = np.asarray(result.get_statevector())
 
     n = int(np.log2(height))
     num_position_qubits = 2 * n
     num_intensity_qubits = 8
+    total_qubits = num_position_qubits + num_intensity_qubits
 
     recon_img = np.zeros((height, width), dtype=np.uint8)
+    max_prob = np.zeros((height, width), dtype=np.float64)
 
-    for bitstring, count in counts.items():
+    probs = np.abs(statevector) ** 2
+    nonzero_indices = np.nonzero(probs > 1e-12)[0]
 
-        bitstring = bitstring[::-1]   # endian fix (same as MCQI)
+    for idx in nonzero_indices:
+        prob = probs[idx]
+
+        # Qiskit little-endian: reverse to get qubit-0-first ordering
+        bitstring = format(int(idx), f'0{total_qubits}b')[::-1]
 
         # ── Split position and intensity ──
         pos_bits = bitstring[:num_position_qubits]
@@ -101,6 +108,8 @@ def reconstruct_neqr_image(qc, height, width, shots=8192):
 
         if i < height and j < width:
             intensity_val = int(intensity_bits[::-1], 2)  # LSB first
-            recon_img[i, j] = intensity_val
+            if prob > max_prob[i, j]:
+                max_prob[i, j] = prob
+                recon_img[i, j] = intensity_val
 
     return recon_img

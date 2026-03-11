@@ -136,12 +136,12 @@ def _import_quantum_modules(repo_path: str):
 
 
 def _verify_qiskit_backend():
-    """Verify that Qiskit AerSimulator is available."""
+    """Verify that Qiskit AerSimulator (statevector mode) is available."""
     try:
         from qiskit_aer import AerSimulator
-        backend = AerSimulator()
-        logger.info(f"AerSimulator initialized for quantum encryption")
-        logger.info(f"  Backend: {backend.name}")
+        backend = AerSimulator(method='statevector')
+        logger.info(f"Statevector simulator initialized for quantum encryption")
+        logger.info(f"  Backend: {backend.name} (statevector mode)")
         return backend
     except ImportError:
         raise RuntimeError(
