@@ -131,7 +131,12 @@ def mode_encrypt(args):
             logger.info(f"Multiple images found, processing first: {os.path.basename(image_path)}")
 
     logger.info(f"Encrypting: {image_path}")
-    result = run_encryption(image_path, config=config, max_blocks=args.max_blocks)
+    result = run_encryption(
+        image_path,
+        config=config,
+        max_blocks=args.max_blocks,
+        decryption_key=args.key,
+    )
 
     logger.info("\n" + "=" * 70)
     logger.info("ENCRYPTION SUMMARY")
@@ -178,6 +183,7 @@ def mode_decrypt(args):
         metadata_path,
         original_image_path=original_path,
         config=config,
+        decryption_key=args.key,
     )
 
     logger.info("\n" + "=" * 70)
@@ -309,7 +315,12 @@ def mode_full_pipeline(args):
     print("║  PHASE 1 / 3 — ENCRYPTION" + " " * 42 + "║")
     print("╚" + "═" * 68 + "╝")
 
-    enc_result = run_encryption(image_path, config=config, max_blocks=args.max_blocks)
+    enc_result = run_encryption(
+        image_path,
+        config=config,
+        max_blocks=args.max_blocks,
+        decryption_key=args.key,
+    )
 
     logger.info("\n" + "=" * 70)
     logger.info("PHASE 1 COMPLETE — ENCRYPTION")
@@ -331,6 +342,7 @@ def mode_full_pipeline(args):
         enc_result["metadata_path"],
         original_image_path=image_path,
         config=config,
+        decryption_key=args.key,
     )
 
     logger.info("\n" + "=" * 70)
@@ -401,6 +413,7 @@ Usage:
 Advanced (single mode):
   python main.py --mode encrypt --input input/satellite.png
   python main.py --mode decrypt --metadata output/metadata/satellite_metadata.json
+    python main.py --mode decrypt --metadata output/metadata/satellite_metadata.json --key "your-passphrase"
   python main.py --mode analyze --input input/satellite.png
   python main.py --mode verify  --original input/satellite.png --decrypted output/decrypted/decrypted_satellite.png
         """,
@@ -438,6 +451,12 @@ Advanced (single mode):
         type=int,
         default=None,
         help="Limit number of ROI blocks to encrypt (for quick testing)",
+    )
+    parser.add_argument(
+        "--key",
+        type=str,
+        default=None,
+        help="Passphrase for wrapped metadata key package (or set HYBRID_KEY_PASSPHRASE)",
     )
 
     args = parser.parse_args()

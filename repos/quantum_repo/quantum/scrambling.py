@@ -3,8 +3,6 @@ def quantum_scramble(qc, bpk, num_position_qubits):
         key = bpk[i % len(bpk)]
         if key % 2 == 1:
             qc.x(i)
-        if (key // 2) % 2 == 1:
-            qc.z(i)
     return qc
 
 # num_position_qubits = 12
@@ -37,7 +35,6 @@ def reverse_quantum_scrambling(qc_scrambled, bpk, num_position_qubits):
     qc_unscrambled = qc_scrambled.copy()
     for i in range(num_position_qubits):
         key=bpk[i%len(bpk)]
-        if (key//2)%2==1: qc_unscrambled.z(i)
         if key%2==1: qc_unscrambled.x(i)
     return qc_unscrambled
 

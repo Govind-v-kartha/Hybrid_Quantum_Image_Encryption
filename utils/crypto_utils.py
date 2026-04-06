@@ -9,6 +9,7 @@ import secrets
 import base64
 import json
 from typing import Tuple
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from utils.logger import setup_logger, get_config_path
 
@@ -63,7 +64,12 @@ def generate_nonce(nonce_size: int = 12) -> bytes:
     return nonce
 
 
-def derive_quantum_seeds(master_seed: bytes, num_blocks: int) -> dict:
+def derive_quantum_seeds(
+    master_seed: bytes,
+    num_blocks: int,
+    alpha: float = 1.4,
+    beta: float = 0.3,
+) -> dict:
     """
     Derive deterministic seeds for quantum encryption of each block.
 
@@ -88,13 +94,13 @@ def derive_quantum_seeds(master_seed: bytes, num_blocks: int) -> dict:
     seeds = {
         "x0": x0,
         "y0": y0,
-        "alpha": 1.4,
-        "beta": 0.3,
+        "alpha": float(alpha),
+        "beta": float(beta),
         "num_blocks": num_blocks,
         "master_seed_hash": hashlib.sha256(master_seed).hexdigest(),
     }
     logger.info(
-        f"Derived quantum seeds for {num_blocks} blocks: x0={x0:.6f}, y0={y0:.6f}"
+        f"Derived quantum seeds for {num_blocks} blocks: x0={x0:.6f}, y0={y0:.6f}, alpha={alpha}, beta={beta}"
     )
     return seeds
 
@@ -160,3 +166,84 @@ def load_key_material(key_path: str) -> Tuple[bytes, bytes, bytes]:
     salt = decode_bytes_b64(key_data["salt"])
     logger.info(f"Key material loaded from {key_path}")
     return master_seed, aes_key, salt
+
+
+def build_wrapped_key_package(
+    master_seed: bytes,
+    salt: bytes,
+    passphrase: str,
+    iterations: int = 200000,
+) -> dict:
+    """
+    Wrap master key material into an encrypted package for metadata storage.
+
+    The package stores encrypted key payload (master_seed + AES derivation salt)
+    and can be unlocked only with the provided passphrase.
+    """
+    if not passphrase:
+        raise ValueError("passphrase is required to build wrapped key package")
+
+    wrapping_salt = secrets.token_bytes(16)
+    wrapping_nonce = secrets.token_bytes(12)
+    wrapping_key = hashlib.pbkdf2_hmac(
+        "sha256",
+        passphrase.encode("utf-8"),
+        wrapping_salt,
+        int(iterations),
+        dklen=32,
+    )
+
+    payload = {
+        "master_seed_b64": encode_bytes_b64(master_seed),
+        "salt_b64": encode_bytes_b64(salt),
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+    aesgcm = AESGCM(wrapping_key)
+    ciphertext_with_tag = aesgcm.encrypt(wrapping_nonce, payload_bytes, None)
+    ciphertext = ciphertext_with_tag[:-16]
+    tag = ciphertext_with_tag[-16:]
+
+    logger.info("Built wrapped key package for metadata storage")
+    return {
+        "format": "wrapped_key_package_v1",
+        "kdf": "PBKDF2-HMAC-SHA256",
+        "iterations": int(iterations),
+        "wrapping_salt_b64": encode_bytes_b64(wrapping_salt),
+        "wrapping_nonce_b64": encode_bytes_b64(wrapping_nonce),
+        "ciphertext_b64": encode_bytes_b64(ciphertext),
+        "tag_b64": encode_bytes_b64(tag),
+    }
+
+
+def unwrap_key_package(key_package: dict, passphrase: str) -> Tuple[bytes, bytes]:
+    """
+    Unwrap metadata key package and return (master_seed, salt).
+    """
+    if not key_package:
+        raise ValueError("key_package is required")
+    if not passphrase:
+        raise ValueError("passphrase is required to unwrap key package")
+
+    iterations = int(key_package["iterations"])
+    wrapping_salt = decode_bytes_b64(key_package["wrapping_salt_b64"])
+    wrapping_nonce = decode_bytes_b64(key_package["wrapping_nonce_b64"])
+    ciphertext = decode_bytes_b64(key_package["ciphertext_b64"])
+    tag = decode_bytes_b64(key_package["tag_b64"])
+
+    wrapping_key = hashlib.pbkdf2_hmac(
+        "sha256",
+        passphrase.encode("utf-8"),
+        wrapping_salt,
+        iterations,
+        dklen=32,
+    )
+
+    aesgcm = AESGCM(wrapping_key)
+    payload_bytes = aesgcm.decrypt(wrapping_nonce, ciphertext + tag, None)
+    payload = json.loads(payload_bytes.decode("utf-8"))
+
+    master_seed = decode_bytes_b64(payload["master_seed_b64"])
+    salt = decode_bytes_b64(payload["salt_b64"])
+    logger.info("Unwrapped key package from metadata")
+    return master_seed, salt

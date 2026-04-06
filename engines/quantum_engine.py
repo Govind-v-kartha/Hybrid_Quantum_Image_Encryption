@@ -92,7 +92,7 @@ def _import_quantum_modules(repo_path: str):
     _quantum_repo_path = repo_path
 
     try:
-        from quantum.neqr import encode_neqr, reconstruct_neqr_image
+        from quantum.neqr_adapter import encode_neqr, reconstruct_neqr_image
         from quantum.scrambling import (
             quantum_scramble,
             quantum_permutation,
@@ -106,7 +106,7 @@ def _import_quantum_modules(repo_path: str):
         from dna.dna_decode import dna_decrypt
 
         logger.info("All quantum repo modules imported successfully:")
-        logger.info("  - quantum.neqr: encode_neqr, reconstruct_neqr_image")
+        logger.info("  - quantum.neqr_adapter: encode_neqr, reconstruct_neqr_image")
         logger.info("  - quantum.scrambling: quantum_scramble, quantum_permutation")
         logger.info("  - quantum.scrambling: reverse_quantum_scrambling, reverse_quantum_permutation")
         logger.info("  - chaos.qrng: qrng")
@@ -167,16 +167,20 @@ def _generate_keys_for_block(
     # Derive unique seeds per block from master seeds
     x0_base = quantum_seeds["x0"]
     y0_base = quantum_seeds["y0"]
+    alpha = float(quantum_seeds.get("alpha", 1.4))
+    beta = float(quantum_seeds.get("beta", 0.3))
 
     # Perturb based on block_id for unique keys per block
-    np.random.seed(int(x0_base * 1e6) + block_id)
-    x0 = max(0.01, min(0.99, x0_base + block_id * 0.00001))
-    y0 = max(0.01, min(0.99, y0_base + block_id * 0.00001))
+    seed_x = (x0_base + block_id * 0.001) % 1.0
+    seed_y = (y0_base + block_id * 0.0007) % 1.0
 
     henon_map = modules["henon_map"]
-    x, y = henon_map(x0, y0, n_iter=block_size)
+    iterations = block_size * block_size + 100
+    x, y = henon_map(seed_x, seed_y, alpha, beta, iterations)
+    x = x[100:]
+    y = y[100:]
 
-    # Henon map with alpha=1.8 is chaotic and diverges — replace NaN/Inf
+    # Replace NaN/Inf from chaotic divergence with bounded values
     x = np.nan_to_num(x, nan=0.5, posinf=0.99, neginf=0.01)
     y = np.nan_to_num(y, nan=0.5, posinf=0.99, neginf=0.01)
 
@@ -184,6 +188,15 @@ def _generate_keys_for_block(
     ksk = np.floor(np.abs(y) * 256).astype(np.uint8)
 
     return bpk, ksk
+
+
+def _swap_operations(ksk: np.ndarray, num_position_qubits: int):
+    swap_operations = []
+    for i in range(num_position_qubits - 1):
+        j = i + 1 + (int(ksk[i % len(ksk)]) % (num_position_qubits - i - 1))
+        j = min(j, num_position_qubits - 1)
+        swap_operations.append((i, j))
+    return swap_operations
 
 
 def encrypt_block_quantum(
@@ -201,7 +214,7 @@ def encrypt_block_quantum(
     2. Encodes using NEQR (quantum circuit creation)
     3. Applies quantum scrambling gates
     4. Applies quantum permutation gates
-    5. Measures with shots on AerSimulator
+    5. Reconstructs the exact encrypted image from the statevector
     6. Applies DNA encryption layer
     7. Returns encrypted block
 
@@ -220,13 +233,11 @@ def encrypt_block_quantum(
     start_time = time.time()
     block_size = 32
 
-    # Extract functions from modules
     encode_neqr = modules["encode_neqr"]
     reconstruct_neqr_image = modules["reconstruct_neqr_image"]
     q_scramble = modules["quantum_scramble"]
     q_permutation = modules["quantum_permutation"]
     dna_encode = modules["dna_encode"]
-    generate_chaotic_key_image = modules["generate_chaotic_key_image"]
 
     # Step 1: Convert to grayscale if needed (NEQR works on grayscale)
     if block.ndim == 3:
@@ -246,9 +257,9 @@ def encrypt_block_quantum(
     qc = encode_neqr(gray_block)
 
     n = int(np.log2(block_size))
-    num_position_qubits = 2 * n  # 6 qubits for 8x8
+    num_position_qubits = 2 * n  # 10 qubits for 32x32
 
-    # Step 4: Apply quantum scrambling (X and Z gates based on chaotic key)
+    # Step 4: Apply quantum scrambling (X gates based on chaotic key)
     logger.debug(f"Block {block_id}: Applying quantum scrambling...")
     qc = q_scramble(qc, bpk, num_position_qubits)
 
@@ -256,8 +267,8 @@ def encrypt_block_quantum(
     logger.debug(f"Block {block_id}: Applying quantum permutation...")
     qc = q_permutation(qc, ksk, num_position_qubits)
 
-    # Step 6: Measure quantum state with shots
-    logger.debug(f"Block {block_id}: Measuring quantum state (shots={shots})...")
+    # Step 6: Reconstruct by Aer measurement
+    logger.debug(f"Block {block_id}: Measuring quantum state with AerSimulator (shots={shots})...")
     scrambled_img = reconstruct_neqr_image(qc, block_size, block_size, shots=shots)
 
     # Step 7: Apply DNA encryption layer
@@ -329,7 +340,6 @@ def decrypt_block_quantum(
     start_time = time.time()
     block_size = 32
 
-    # Extract functions
     encode_neqr = modules["encode_neqr"]
     reconstruct_neqr_image = modules["reconstruct_neqr_image"]
     reverse_q_scrambling = modules["reverse_quantum_scrambling"]

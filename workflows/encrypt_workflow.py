@@ -31,6 +31,7 @@ from utils.crypto_utils import (
     generate_nonce,
     derive_quantum_seeds,
     encode_bytes_b64,
+    build_wrapped_key_package,
     save_key_material,
 )
 from engines.ai_engine import segment_image_fleximo, save_segmentation_visualization
@@ -47,6 +48,7 @@ def run_encryption(
     output_dir: str = None,
     config: dict = None,
     max_blocks: int = None,
+    decryption_key: str = None,
 ) -> dict:
     """
     Run the complete encryption pipeline on a single image.
@@ -173,12 +175,31 @@ def run_encryption(
     salt = os.urandom(16)
     aes_key = derive_aes_key(master_seed, salt)
     nonce = generate_nonce(12)
-    quantum_seeds = derive_quantum_seeds(master_seed, len(blocks))
+    quantum_seeds = derive_quantum_seeds(
+        master_seed,
+        len(blocks),
+        alpha=config["quantum_encryption"].get("henon_alpha", 1.4),
+        beta=config["quantum_encryption"].get("henon_beta", 0.3),
+    )
 
-    # Save key material
+    # Save key material (legacy compatibility path)
     key_path = os.path.join(metadata_dir, f"{image_basename}_keys.json")
     save_key_material(master_seed, aes_key, salt, key_path)
     logger.info(f"Keys generated and saved to {key_path}")
+
+    # Preferred v2 mode: wrapped key package in metadata (encrypted image + metadata + key)
+    passphrase = decryption_key or os.getenv("HYBRID_KEY_PASSPHRASE")
+    key_package = None
+    key_management_mode = "legacy_key_file"
+    if passphrase:
+        key_package = build_wrapped_key_package(master_seed, salt, passphrase)
+        key_management_mode = "wrapped_passphrase"
+        logger.info("Using wrapped passphrase key package for metadata decryption contract")
+    else:
+        logger.warning(
+            "No decryption key provided. Falling back to legacy key-file mode. "
+            "Set --key or HYBRID_KEY_PASSPHRASE for encrypted-image + metadata + key contract."
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # STEP 5: Quantum Encryption of ROI Blocks
@@ -235,8 +256,9 @@ def run_encryption(
 
     metadata = {
         "encryption_metadata": {
-            "version": "1.0",
+            "version": "2.0",
             "timestamp": datetime.now().isoformat(),
+            "pipeline_version": "adaptive-hybrid-v2",
             "original_image": image_info,
             "roi_information": {
                 "total_roi_pixels": int(np.sum(roi_mask)),
@@ -250,6 +272,7 @@ def run_encryption(
                 "backend": "AerSimulator",
                 "shots_per_block": config.get("quantum_encryption", {}).get("shots", 1024),
                 "encoding": "NEQR",
+                "encoding_version": "neqr_new_adapter_v1",
                 "master_seed_hash": quantum_seeds["master_seed_hash"],
                 "x0": quantum_seeds["x0"],
                 "y0": quantum_seeds["y0"],
@@ -257,12 +280,24 @@ def run_encryption(
             },
             "block_encryption_info": all_encryption_info,
             "classical_encryption": classical_enc_info,
+            "key_management": {
+                "mode": key_management_mode,
+                "key_package": key_package,
+            },
             "output_files": {
                 "encrypted_image": fused_path,
-                "encrypted_background": bg_cipher_path,
                 "keys": key_path,
             },
         }
+    }
+
+    # Embed ROI mask in metadata for encrypted-image + metadata + key decryption.
+    roi_mask_u8 = roi_mask.astype(np.uint8)
+    metadata["encryption_metadata"]["roi_information"]["roi_mask_embedded"] = {
+        "format": "npy_u8_b64_v1",
+        "shape": list(roi_mask_u8.shape),
+        "dtype": "uint8",
+        "data_b64": encode_bytes_b64(roi_mask_u8.tobytes()),
     }
 
     # Save ROI mask
@@ -274,17 +309,12 @@ def run_encryption(
     bg_mask_path = os.path.join(metadata_dir, f"{image_basename}_bg_mask.npy")
     np.save(bg_mask_path, background_mask)
 
-    # Save encrypted blocks as numpy array for lossless decryption
-    enc_blocks_path = os.path.join(metadata_dir, f"{image_basename}_encrypted_blocks.npy")
-    enc_blocks_array = np.array(encrypted_blocks, dtype=np.uint8)
-    np.save(enc_blocks_path, enc_blocks_array)
-    metadata["encryption_metadata"]["output_files"]["encrypted_blocks"] = enc_blocks_path
-
-    # Save original ROI blocks for verification
-    original_blocks_path = os.path.join(metadata_dir, f"{image_basename}_original_blocks.npy")
-    original_blocks_array = np.array(blocks, dtype=np.uint8)
-    np.save(original_blocks_path, original_blocks_array)
-    metadata["encryption_metadata"]["output_files"]["original_blocks"] = original_blocks_path
+    # ⚠️  DECRYPTION-FROM-IMAGE-ONLY MODE ⚠️
+    # Store encrypted background ciphertext in metadata as base64 instead of sidecar file.
+    # This ensures all decryption data comes from encrypted_image + metadata only.
+    metadata["encryption_metadata"]["classical_encryption"]["ciphertext_b64"] = encode_bytes_b64(ciphertext)
+    logger.info("Embedded encrypted background in metadata (base64)")
+    logger.info("Decryption will reconstruct from encrypted image + metadata only (no sidecar files)")
 
     # Save metadata
     metadata_path = os.path.join(metadata_dir, f"{image_basename}_metadata.json")

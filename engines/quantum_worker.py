@@ -42,7 +42,7 @@ def _ensure_modules(repo_path: str) -> dict:
     if repo_path not in sys.path:
         sys.path.insert(0, repo_path)
 
-    from quantum.neqr import encode_neqr, reconstruct_neqr_image
+    from quantum.neqr_adapter import encode_neqr, reconstruct_neqr_image
     from quantum.scrambling import (
         quantum_scramble,
         quantum_permutation,
@@ -77,8 +77,8 @@ def _generate_keys_for_block(quantum_seeds, block_id, block_size, modules):
     henon_map = modules["henon_map"]
     x0 = quantum_seeds["x0"]
     y0 = quantum_seeds["y0"]
-    alpha = quantum_seeds.get("alpha", 1.8)
-    beta = quantum_seeds.get("beta", 0.015)
+    alpha = quantum_seeds.get("alpha", 1.4)
+    beta = quantum_seeds.get("beta", 0.3)
 
     seed_x = (x0 + block_id * 0.001) % 1.0
     seed_y = (y0 + block_id * 0.0007) % 1.0
@@ -96,6 +96,15 @@ def _generate_keys_for_block(quantum_seeds, block_id, block_size, modules):
     ksk = np.floor(np.abs(y) * 256).astype(np.uint8)
 
     return bpk, ksk
+
+
+def _swap_operations(ksk, num_position_qubits):
+    swap_operations = []
+    for i in range(num_position_qubits - 1):
+        j = i + 1 + (int(ksk[i % len(ksk)]) % (num_position_qubits - i - 1))
+        j = min(j, num_position_qubits - 1)
+        swap_operations.append((i, j))
+    return swap_operations
 
 
 def _rgb_to_grayscale(block):

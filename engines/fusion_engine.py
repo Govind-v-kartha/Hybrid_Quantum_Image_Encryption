@@ -44,6 +44,18 @@ def fuse_encrypted_image(
 
     H, W, C = original_shape
 
+    if len(encrypted_blocks) != len(block_map):
+        raise ValueError(
+            f"encrypted_blocks count ({len(encrypted_blocks)}) != block_map count ({len(block_map)})"
+        )
+
+    # Enforce deterministic mapping: block_map index must match block_id
+    for i, bmap in enumerate(block_map):
+        if int(bmap.get("block_id", -1)) != i:
+            raise ValueError(
+                f"block_map ordering mismatch at index {i}: block_id={bmap.get('block_id')}"
+            )
+
     # Start with the encrypted background
     fused_image = encrypted_background_image.copy()
 
@@ -86,7 +98,6 @@ def fuse_encrypted_image(
 def unfuse_encrypted_image(
     fused_image: np.ndarray,
     block_map: List[dict],
-    roi_mask: np.ndarray,
 ) -> Tuple[List[np.ndarray], np.ndarray]:
     """
     Separate a fused encrypted image back into ROI blocks and background.
@@ -94,7 +105,6 @@ def unfuse_encrypted_image(
     Args:
         fused_image: Fused encrypted image (H, W, 3).
         block_map: Block metadata with positions.
-        roi_mask: Binary ROI mask (H, W).
 
     Returns:
         Tuple of:
@@ -104,6 +114,13 @@ def unfuse_encrypted_image(
     logger.info("Unfusing encrypted image into components...")
 
     H, W = fused_image.shape[:2]
+
+    # Enforce deterministic mapping before extraction
+    for i, bmap in enumerate(block_map):
+        if int(bmap.get("block_id", -1)) != i:
+            raise ValueError(
+                f"block_map ordering mismatch at index {i}: block_id={bmap.get('block_id')}"
+            )
 
     # Extract encrypted ROI blocks
     encrypted_blocks = []

@@ -168,12 +168,25 @@ def reconstruct_from_blocks(
     roi_w = x_max - x_min
     channels = original_shape[2] if len(original_shape) > 2 else 1
 
+    if len(blocks) != len(block_map):
+        raise ValueError(
+            f"blocks count ({len(blocks)}) != block_map count ({len(block_map)})"
+        )
+
     if channels > 1:
         roi_image = np.zeros((roi_h, roi_w, channels), dtype=np.uint8)
     else:
         roi_image = np.zeros((roi_h, roi_w), dtype=np.uint8)
 
-    for block, bmap in zip(blocks, block_map):
+    for i, (block, bmap) in enumerate(zip(blocks, block_map)):
+        if block is None:
+            raise ValueError(f"Missing block at index {i}")
+
+        if int(bmap.get("block_id", -1)) != i:
+            raise ValueError(
+                f"block_map ordering mismatch at index {i}: block_id={bmap.get('block_id')}"
+            )
+
         # Local position within the ROI region
         px_start = int(bmap["roi_local_position"][0])
         py_start = int(bmap["roi_local_position"][1])
@@ -182,9 +195,18 @@ def reconstruct_from_blocks(
         if bmap["is_padded"] and bmap["padding_info"]:
             actual_h = int(bmap["padding_info"]["original_size"][0])
             actual_w = int(bmap["padding_info"]["original_size"][1])
+            if actual_h < 1 or actual_h > BLOCK_SIZE or actual_w < 1 or actual_w > BLOCK_SIZE:
+                raise ValueError(
+                    f"Invalid padded size for block {i}: ({actual_h}, {actual_w})"
+                )
         else:
             actual_h = BLOCK_SIZE
             actual_w = BLOCK_SIZE
+
+        if py_start < 0 or px_start < 0 or py_start + actual_h > roi_h or px_start + actual_w > roi_w:
+            raise ValueError(
+                f"Block {i} placement out of ROI bounds: start=({px_start},{py_start}), size=({actual_w},{actual_h}), roi=({roi_w},{roi_h})"
+            )
 
         # Place block (only the non-padded portion)
         block_region = block[:actual_h, :actual_w]

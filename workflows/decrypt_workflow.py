@@ -19,7 +19,13 @@ from datetime import datetime
 
 from utils.logger import setup_logger, get_config_path, load_config
 from utils.image_utils import load_image, save_image
-from utils.crypto_utils import load_key_material, derive_quantum_seeds, decode_bytes_b64
+from utils.crypto_utils import (
+    load_key_material,
+    derive_quantum_seeds,
+    derive_aes_key,
+    decode_bytes_b64,
+    unwrap_key_package,
+)
 from utils.block_utils import reconstruct_from_blocks, place_roi_on_image
 from engines.classical_engine import decrypt_background
 from engines.quantum_engine import decrypt_all_blocks
@@ -34,6 +40,7 @@ def run_decryption(
     output_dir: str = None,
     original_image_path: str = None,
     config: dict = None,
+    decryption_key: str = None,
 ) -> dict:
     """
     Run the complete decryption pipeline.
@@ -87,9 +94,25 @@ def run_decryption(
     roi_bbox = np.array(enc_meta["roi_information"]["roi_bbox"])
     all_encryption_info = enc_meta["block_encryption_info"]
 
-    # Load keys
-    key_path = enc_meta["output_files"]["keys"]
-    master_seed, aes_key, salt = load_key_material(key_path)
+    # Load keys: preferred wrapped key package mode, fallback to legacy key file
+    key_mgmt = enc_meta.get("key_management", {})
+    key_package = key_mgmt.get("key_package")
+    key_mode = key_mgmt.get("mode", "legacy_key_file")
+
+    if key_package and key_mode == "wrapped_passphrase":
+        passphrase = decryption_key or os.getenv("HYBRID_KEY_PASSPHRASE")
+        if not passphrase:
+            raise ValueError(
+                "Missing decryption key for wrapped metadata package. "
+                "Provide --key or HYBRID_KEY_PASSPHRASE."
+            )
+        master_seed, salt = unwrap_key_package(key_package, passphrase)
+        aes_key = derive_aes_key(master_seed, salt)
+        logger.info("Loaded decryption keys from wrapped metadata key package")
+    else:
+        key_path = enc_meta["output_files"]["keys"]
+        master_seed, aes_key, salt = load_key_material(key_path)
+        logger.warning("Using legacy key file mode for decryption")
 
     # Load classical encryption info
     classical_info = enc_meta["classical_encryption"]
@@ -97,14 +120,30 @@ def run_decryption(
     tag = decode_bytes_b64(classical_info["tag"])
     bg_image_shape = tuple(classical_info["image_shape"])
 
-    # Load ROI mask
-    roi_mask_path = enc_meta["roi_information"]["roi_mask_path"]
-    roi_mask = np.load(roi_mask_path)
+    # Load ROI mask: prefer embedded metadata payload, fallback to legacy external file
+    roi_info = enc_meta["roi_information"]
+    roi_mask_embedded = roi_info.get("roi_mask_embedded")
+    if roi_mask_embedded:
+        roi_mask = np.frombuffer(
+            decode_bytes_b64(roi_mask_embedded["data_b64"]),
+            dtype=np.uint8,
+        ).reshape(tuple(roi_mask_embedded["shape"]))
+        logger.info("ROI mask loaded from metadata (embedded)")
+    else:
+        roi_mask_path = roi_info["roi_mask_path"]
+        roi_mask = np.load(roi_mask_path)
+        logger.warning("ROI mask loaded from legacy external file path")
 
-    # Load encrypted background
-    bg_cipher_path = enc_meta["output_files"]["encrypted_background"]
-    with open(bg_cipher_path, "rb") as f:
-        ciphertext = f.read()
+    # Load encrypted background ciphertext: prefer metadata, fallback to legacy sidecar file
+    ciphertext_b64 = classical_info.get("ciphertext_b64")
+    if ciphertext_b64:
+        ciphertext = decode_bytes_b64(ciphertext_b64)
+        logger.info("Encrypted background ciphertext loaded from metadata (IMAGE-ONLY mode)")
+    else:
+        bg_cipher_path = enc_meta["output_files"]["encrypted_background"]
+        with open(bg_cipher_path, "rb") as f:
+            ciphertext = f.read()
+        logger.warning("Using legacy encrypted_background sidecar file")
 
     # Load encrypted image
     encrypted_image_path = enc_meta["output_files"]["encrypted_image"]
@@ -114,23 +153,15 @@ def run_decryption(
     logger.info(f"Original image shape: {original_shape}")
 
     # ─────────────────────────────────────────────────────────────────
-    # STEP 2: Load Encrypted Blocks
+    # STEP 2: Unfuse Encrypted Image into ROI Blocks and Background
     # ─────────────────────────────────────────────────────────────────
-    logger.info("\n>>> STEP 2: Loading encrypted blocks...")
+    logger.info("\n>>> STEP 2: Unfusing encrypted image into components...")
 
-    # Load encrypted blocks from saved numpy file (lossless, no edge clipping)
-    enc_blocks_path = enc_meta.get("output_files", {}).get("encrypted_blocks")
-    if enc_blocks_path and os.path.exists(enc_blocks_path):
-        enc_blocks_array = np.load(enc_blocks_path)
-        encrypted_blocks = [enc_blocks_array[i] for i in range(enc_blocks_array.shape[0])]
-        logger.info(f"Loaded {len(encrypted_blocks)} encrypted blocks from {enc_blocks_path}")
-    else:
-        # Fallback: extract from fused image (may clip edge blocks)
-        logger.warning("Encrypted blocks file not found, extracting from fused image (may lose edge data)")
-        encrypted_blocks, encrypted_bg = unfuse_encrypted_image(
-            encrypted_image, block_map, roi_mask
-        )
-    logger.info(f"Separated {len(encrypted_blocks)} encrypted blocks")
+    # Always unfuse from the encrypted image (primary source)
+    encrypted_blocks, _ = unfuse_encrypted_image(
+        encrypted_image, block_map
+    )
+    logger.info(f"Unfused {len(encrypted_blocks)} encrypted blocks from image")
 
     # ─────────────────────────────────────────────────────────────────
     # STEP 3: Classical Decryption of Background
@@ -145,7 +176,12 @@ def run_decryption(
     # STEP 4: Quantum Decryption of ROI Blocks
     # ─────────────────────────────────────────────────────────────────
     logger.info("\n>>> STEP 4: Quantum decryption of ROI blocks...")
-    quantum_seeds = derive_quantum_seeds(master_seed, len(block_map))
+    quantum_seeds = derive_quantum_seeds(
+        master_seed,
+        len(block_map),
+        alpha=config["quantum_encryption"].get("henon_alpha", 1.4),
+        beta=config["quantum_encryption"].get("henon_beta", 0.3),
+    )
 
     decrypted_blocks = decrypt_all_blocks(
         encrypted_blocks, quantum_seeds, all_encryption_info, config
@@ -160,18 +196,15 @@ def run_decryption(
     # Start with decrypted background (full image with ROI pixels zeroed)
     reconstructed_image = decrypted_background.copy()
 
-    # For lossless reconstruction, use the original RGB blocks saved during encryption.
-    # The quantum pipeline (NEQR) only works on grayscale and is probabilistic due to 
-    # quantum measurement, so quantum-decrypted blocks have inherent noise.
-    # The original RGB blocks are stored encrypted via AES alongside the metadata,
-    # ensuring zero data loss (PSNR=∞, SSIM=1.0) for the full pipeline.
+    # For lossless reconstruction, attempt to load original RGB blocks if available.
+    # However, in IMAGE-ONLY decryption mode, we use quantum-decrypted blocks.
     original_blocks_path = enc_meta.get("output_files", {}).get("original_blocks")
     if original_blocks_path and os.path.exists(original_blocks_path):
-        logger.info("Using stored original RGB blocks for lossless reconstruction")
+        logger.info("Original RGB blocks found; using for lossless reconstruction")
         original_blocks_array = np.load(original_blocks_path)
         reconstruction_blocks = [original_blocks_array[i] for i in range(original_blocks_array.shape[0])]
     else:
-        logger.warning("Original RGB blocks not found, using quantum-decrypted blocks (lossy)")
+        logger.info("Decryption from encrypted image only mode: using quantum-decrypted blocks")
         reconstruction_blocks = decrypted_blocks
 
     # Reconstruct ROI from blocks
