@@ -151,32 +151,33 @@ def _verify_qiskit_backend():
 
 
 def _generate_keys_for_block(
-    quantum_seeds: dict, block_id: int, block_size: int, modules: dict
+    quantum_seeds: dict, block_id: int, block_size: int, modules: dict,
+    channel_id: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generate deterministic encryption keys for a specific block using Henon map.
+    Generate deterministic encryption keys for a specific block and channel.
 
     Args:
         quantum_seeds: Seed parameters from crypto_utils.
         block_id: Block identifier.
+        block_size: Size of the block (e.g. 32).
         modules: Imported quantum repo modules.
+        channel_id: Color channel index (0=R, 1=G, 2=B).
 
     Returns:
         Tuple of (bpk, ksk) key arrays.
     """
-    # Derive unique seeds per block from master seeds
     x0_base = quantum_seeds["x0"]
     y0_base = quantum_seeds["y0"]
 
-    # Perturb based on block_id for unique keys per block
-    np.random.seed(int(x0_base * 1e6) + block_id)
-    x0 = max(0.01, min(0.99, x0_base + block_id * 0.00001))
-    y0 = max(0.01, min(0.99, y0_base + block_id * 0.00001))
+    # Perturb based on block_id AND channel_id for unique keys per block per channel
+    np.random.seed(int(x0_base * 1e6) + block_id * 10 + channel_id)
+    x0 = max(0.01, min(0.99, x0_base + block_id * 0.00001 + channel_id * 0.000003))
+    y0 = max(0.01, min(0.99, y0_base + block_id * 0.00001 + channel_id * 0.000003))
 
     henon_map = modules["henon_map"]
     x, y = henon_map(x0, y0, n_iter=block_size)
 
-    # Henon map with alpha=1.8 is chaotic and diverges — replace NaN/Inf
     x = np.nan_to_num(x, nan=0.5, posinf=0.99, neginf=0.01)
     y = np.nan_to_num(y, nan=0.5, posinf=0.99, neginf=0.01)
 
@@ -191,31 +192,29 @@ def encrypt_block_quantum(
     block_id: int,
     quantum_seeds: dict,
     modules: dict,
-    shots: int = 1024,
+    shots: int = 16384,
 ) -> Tuple[np.ndarray, dict]:
     """
-    Encrypt a single 8x8 block using NEQR quantum encryption from Repository B.
+    Encrypt a single 32x32 block using per-channel NEQR quantum encryption.
 
-    This is the core quantum encryption function. It:
-    1. Converts the block to grayscale (NEQR works on grayscale)
-    2. Encodes using NEQR (quantum circuit creation)
-    3. Applies quantum scrambling gates
-    4. Applies quantum permutation gates
-    5. Measures with shots on AerSimulator
-    6. Applies DNA encryption layer
-    7. Returns encrypted block
+    Each RGB channel is processed independently through the full pipeline:
+    1. NEQR encode channel → quantum circuit
+    2. Quantum scrambling (X, Z gates via chaotic key bpk)
+    3. Quantum permutation (SWAP gates via chaotic key ksk)
+    4. Shot-based measurement with majority vote
+    5. DNA encoding + XOR diffusion
 
     Args:
-        block: 8x8x3 RGB block or 8x8 grayscale block.
+        block: 32x32x3 RGB block or 32x32 grayscale block.
         block_id: Block identifier for key derivation.
         quantum_seeds: Seed parameters for key generation.
         modules: Imported quantum repo modules.
-        shots: Number of measurement shots (minimum 1024).
+        shots: Number of measurement shots (default 16384).
 
     Returns:
         Tuple of:
-            - encrypted_block: Encrypted 32x32 block (uint8).
-            - encryption_info: Dict with encryption details for this block.
+            - encrypted_block: Encrypted 32x32x3 block (uint8) or 32x32 if grayscale.
+            - encryption_info: Dict with per-channel encryption details.
     """
     start_time = time.time()
     block_size = 32
@@ -226,72 +225,91 @@ def encrypt_block_quantum(
     q_scramble = modules["quantum_scramble"]
     q_permutation = modules["quantum_permutation"]
     dna_encode = modules["dna_encode"]
-    generate_chaotic_key_image = modules["generate_chaotic_key_image"]
 
-    # Step 1: Convert to grayscale if needed (NEQR works on grayscale)
+    # Determine channels to process
     if block.ndim == 3:
-        gray_block = rgb_to_grayscale(block)
+        num_channels = block.shape[2]
+        channels = [block[:, :, c].copy() for c in range(num_channels)]
     else:
-        gray_block = block.copy()
+        num_channels = 1
+        channels = [block.copy()]
 
-    assert gray_block.shape == (block_size, block_size), (
-        f"Block must be {block_size}x{block_size}, got {gray_block.shape}"
+    assert channels[0].shape == (block_size, block_size), (
+        f"Block must be {block_size}x{block_size}, got {channels[0].shape}"
     )
 
-    # Step 2: Generate keys for this block
-    bpk, ksk = _generate_keys_for_block(quantum_seeds, block_id, block_size, modules)
-
-    # Step 3: NEQR encode - creates quantum circuit
-    logger.debug(f"Block {block_id}: NEQR encoding...")
-    qc = encode_neqr(gray_block)
-
     n = int(np.log2(block_size))
-    num_position_qubits = 2 * n  # 6 qubits for 8x8
+    num_position_qubits = 2 * n
 
-    # Step 4: Apply quantum scrambling (X and Z gates based on chaotic key)
-    logger.debug(f"Block {block_id}: Applying quantum scrambling...")
-    qc = q_scramble(qc, bpk, num_position_qubits)
+    encrypted_channels = []
+    channel_infos = []
 
-    # Step 5: Apply quantum permutation (SWAP gates)
-    logger.debug(f"Block {block_id}: Applying quantum permutation...")
-    qc = q_permutation(qc, ksk, num_position_qubits)
+    for ch_idx, channel in enumerate(channels):
+        # Generate unique keys for this block + channel
+        bpk, ksk = _generate_keys_for_block(
+            quantum_seeds, block_id, block_size, modules, channel_id=ch_idx
+        )
 
-    # Step 6: Measure quantum state with shots
-    logger.debug(f"Block {block_id}: Measuring quantum state (shots={shots})...")
-    scrambled_img = reconstruct_neqr_image(qc, block_size, block_size, shots=shots)
+        # NEQR encode
+        logger.debug(f"Block {block_id} ch{ch_idx}: NEQR encoding...")
+        qc = encode_neqr(channel)
 
-    # Step 7: Apply DNA encryption layer
-    logger.debug(f"Block {block_id}: Applying DNA encryption...")
-    DNi0, DNi1, DNi2, DNi3 = dna_encode(scrambled_img, ksk)
+        # Quantum scrambling
+        logger.debug(f"Block {block_id} ch{ch_idx}: Quantum scrambling...")
+        qc = q_scramble(qc, bpk, num_position_qubits)
 
-    # Generate chaotic key deterministically from block keys (avoids slow qrng per block)
-    np.random.seed(int(bpk.sum()) * 1000 + int(ksk.sum()) + block_id)
-    KH = np.random.randint(0, 256, (block_size, block_size), dtype=np.uint8)
-    DKi0, DKi1, DKi2, DKi3 = dna_encode(KH, ksk)
+        # Quantum permutation
+        logger.debug(f"Block {block_id} ch{ch_idx}: Quantum permutation...")
+        qc = q_permutation(qc, ksk, num_position_qubits)
 
-    # XOR diffusion to create final encrypted block
-    encrypted_block = (
-        (DNi0 ^ DKi0) << 6
-        | (DNi1 ^ DKi1) << 4
-        | (DNi2 ^ DKi2) << 2
-        | (DNi3 ^ DKi3)
-    ).astype(np.uint8)
+        # Measure with majority vote
+        logger.debug(f"Block {block_id} ch{ch_idx}: Measuring (shots={shots})...")
+        scrambled_img = reconstruct_neqr_image(qc, block_size, block_size, shots=shots)
+
+        # DNA encryption
+        DNi0, DNi1, DNi2, DNi3 = dna_encode(scrambled_img, ksk)
+
+        # Chaotic key image (deterministic from keys + block_id + channel_id)
+        np.random.seed(int(bpk.sum()) * 1000 + int(ksk.sum()) + block_id * 10 + ch_idx)
+        KH = np.random.randint(0, 256, (block_size, block_size), dtype=np.uint8)
+        DKi0, DKi1, DKi2, DKi3 = dna_encode(KH, ksk)
+
+        # XOR diffusion
+        enc_channel = (
+            (DNi0 ^ DKi0) << 6
+            | (DNi1 ^ DKi1) << 4
+            | (DNi2 ^ DKi2) << 2
+            | (DNi3 ^ DKi3)
+        ).astype(np.uint8)
+
+        encrypted_channels.append(enc_channel)
+        channel_infos.append({
+            "channel_id": ch_idx,
+            "num_qubits": qc.num_qubits,
+            "circuit_depth": qc.depth(),
+            "bpk": bpk.tolist(),
+            "ksk": ksk.tolist(),
+            "KH": KH.tolist(),
+            "DKi0": DKi0.tolist(),
+            "DKi1": DKi1.tolist(),
+            "DKi2": DKi2.tolist(),
+            "DKi3": DKi3.tolist(),
+        })
+
+    # Stack channels
+    if num_channels > 1:
+        encrypted_block = np.stack(encrypted_channels, axis=-1)
+    else:
+        encrypted_block = encrypted_channels[0]
 
     elapsed = time.time() - start_time
 
     encryption_info = {
         "block_id": block_id,
         "shots": shots,
-        "num_qubits": qc.num_qubits,
-        "circuit_depth": qc.depth(),
+        "num_channels": num_channels,
         "encryption_time_seconds": elapsed,
-        "bpk": bpk.tolist(),
-        "ksk": ksk.tolist(),
-        "KH": KH.tolist(),
-        "DKi0": DKi0.tolist(),
-        "DKi1": DKi1.tolist(),
-        "DKi2": DKi2.tolist(),
-        "DKi3": DKi3.tolist(),
+        "channels": channel_infos,
     }
 
     return encrypted_block, encryption_info
@@ -303,28 +321,30 @@ def decrypt_block_quantum(
     quantum_seeds: dict,
     encryption_info: dict,
     modules: dict,
-    shots: int = 1024,
+    shots: int = 16384,
 ) -> np.ndarray:
     """
-    Decrypt a single 8x8 block using reverse NEQR quantum operations.
+    Decrypt a single 32x32 block using per-channel reverse NEQR operations.
 
-    Reverses the encryption process:
-    1. DNA decryption
-    2. Re-encode recovered scrambled image with NEQR
+    Exact mirror of encrypt_block_quantum:
+    For each channel:
+    1. DNA decryption (reverse XOR + reverse substitution)
+    2. NEQR re-encode recovered scrambled channel
     3. Reverse quantum permutation
     4. Reverse quantum scrambling
-    5. Measure to get original block
+    5. Shot-based measurement with majority vote → original channel
+    Stack channels → 32x32x3 RGB block.
 
     Args:
-        encrypted_block: Encrypted 8x8 block.
+        encrypted_block: Encrypted 32x32x3 block (or 32x32 grayscale).
         block_id: Block identifier.
         quantum_seeds: Seed parameters for key generation.
-        encryption_info: Encryption details for this block.
+        encryption_info: Per-channel encryption details.
         modules: Imported quantum repo modules.
         shots: Number of measurement shots.
 
     Returns:
-        Decrypted 32x32 block (uint8).
+        Decrypted 32x32x3 block (uint8), or 32x32 if single channel.
     """
     start_time = time.time()
     block_size = 32
@@ -336,41 +356,63 @@ def decrypt_block_quantum(
     reverse_q_permutation = modules["reverse_quantum_permutation"]
     dna_decrypt = modules["dna_decrypt"]
 
-    # Recover keys
-    bpk = np.array(encryption_info["bpk"], dtype=np.uint8)
-    ksk = np.array(encryption_info["ksk"], dtype=np.uint8)
-
-    # Recover chaotic key DNA planes
-    DKi0 = np.array(encryption_info["DKi0"], dtype=np.uint8)
-    DKi1 = np.array(encryption_info["DKi1"], dtype=np.uint8)
-    DKi2 = np.array(encryption_info["DKi2"], dtype=np.uint8)
-    DKi3 = np.array(encryption_info["DKi3"], dtype=np.uint8)
-
     n = int(np.log2(block_size))
     num_position_qubits = 2 * n
 
-    # Step 1: DNA decryption
-    logger.debug(f"Block {block_id}: DNA decryption...")
-    scrambled_recovered = dna_decrypt(encrypted_block, DKi0, DKi1, DKi2, DKi3, ksk)
+    # Get per-channel info
+    channel_infos = encryption_info.get("channels", [])
+    num_channels = encryption_info.get("num_channels", len(channel_infos))
 
-    # Step 2: Re-encode the scrambled image with NEQR
-    logger.debug(f"Block {block_id}: Re-encoding with NEQR...")
-    qc_re = encode_neqr(scrambled_recovered)
+    # Split encrypted block into channels
+    if encrypted_block.ndim == 3 and num_channels > 1:
+        enc_channels = [encrypted_block[:, :, c] for c in range(num_channels)]
+    else:
+        enc_channels = [encrypted_block if encrypted_block.ndim == 2
+                        else encrypted_block[:, :, 0]]
 
-    # Step 3: Reverse quantum permutation
-    logger.debug(f"Block {block_id}: Reverse quantum permutation...")
-    qc_re = reverse_q_permutation(qc_re, ksk, num_position_qubits)
+    decrypted_channels = []
 
-    # Step 4: Reverse quantum scrambling
-    logger.debug(f"Block {block_id}: Reverse quantum scrambling...")
-    qc_re = reverse_q_scrambling(qc_re, bpk, num_position_qubits)
+    for ch_idx, enc_channel in enumerate(enc_channels):
+        ch_info = channel_infos[ch_idx]
 
-    # Step 5: Measure to get original block
-    logger.debug(f"Block {block_id}: Final quantum reconstruction (shots={shots})...")
-    decrypted_block = reconstruct_neqr_image(qc_re, block_size, block_size, shots=shots)
+        # Recover keys from stored encryption info
+        bpk = np.array(ch_info["bpk"], dtype=np.uint8)
+        ksk = np.array(ch_info["ksk"], dtype=np.uint8)
+        DKi0 = np.array(ch_info["DKi0"], dtype=np.uint8)
+        DKi1 = np.array(ch_info["DKi1"], dtype=np.uint8)
+        DKi2 = np.array(ch_info["DKi2"], dtype=np.uint8)
+        DKi3 = np.array(ch_info["DKi3"], dtype=np.uint8)
+
+        # Step 1: DNA decryption → recover scrambled channel
+        logger.debug(f"Block {block_id} ch{ch_idx}: DNA decryption...")
+        scrambled_recovered = dna_decrypt(enc_channel, DKi0, DKi1, DKi2, DKi3, ksk)
+
+        # Step 2: NEQR re-encode scrambled channel
+        logger.debug(f"Block {block_id} ch{ch_idx}: NEQR re-encoding...")
+        qc_re = encode_neqr(scrambled_recovered)
+
+        # Step 3: Reverse quantum permutation
+        logger.debug(f"Block {block_id} ch{ch_idx}: Reverse permutation...")
+        qc_re = reverse_q_permutation(qc_re, ksk, num_position_qubits)
+
+        # Step 4: Reverse quantum scrambling
+        logger.debug(f"Block {block_id} ch{ch_idx}: Reverse scrambling...")
+        qc_re = reverse_q_scrambling(qc_re, bpk, num_position_qubits)
+
+        # Step 5: Majority vote measurement → original channel
+        logger.debug(f"Block {block_id} ch{ch_idx}: Reconstruction (shots={shots})...")
+        dec_channel = reconstruct_neqr_image(qc_re, block_size, block_size, shots=shots)
+
+        decrypted_channels.append(dec_channel)
+
+    # Stack channels back to RGB
+    if num_channels > 1:
+        decrypted_block = np.stack(decrypted_channels, axis=-1)
+    else:
+        decrypted_block = decrypted_channels[0]
 
     elapsed = time.time() - start_time
-    logger.debug(f"Block {block_id}: Decrypted in {elapsed:.2f}s")
+    logger.debug(f"Block {block_id}: Decrypted {num_channels} channels in {elapsed:.2f}s")
 
     return decrypted_block
 
@@ -604,7 +646,7 @@ def encrypt_all_blocks(
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo_path = os.path.join(project_root, config["repos"]["quantum"]["path"])
-    shots = config.get("quantum_encryption", {}).get("shots", 1024)
+    shots = config.get("quantum_encryption", {}).get("shots", 16384)
 
     logger.info("=" * 60)
     logger.info("STARTING QUANTUM ENCRYPTION OF ROI BLOCKS")
@@ -691,7 +733,7 @@ def decrypt_all_blocks(
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo_path = os.path.join(project_root, config["repos"]["quantum"]["path"])
-    shots = config.get("quantum_encryption", {}).get("shots", 1024)
+    shots = config.get("quantum_encryption", {}).get("shots", 16384)
 
     logger.info("=" * 60)
     logger.info("STARTING QUANTUM DECRYPTION OF ROI BLOCKS")

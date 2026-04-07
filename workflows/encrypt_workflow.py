@@ -248,7 +248,7 @@ def run_encryption(
             "block_map": block_map,
             "quantum_encryption": {
                 "backend": "AerSimulator",
-                "shots_per_block": config.get("quantum_encryption", {}).get("shots", 1024),
+                "shots_per_block": config.get("quantum_encryption", {}).get("shots", 16384),
                 "encoding": "NEQR",
                 "master_seed_hash": quantum_seeds["master_seed_hash"],
                 "x0": quantum_seeds["x0"],
@@ -275,16 +275,12 @@ def run_encryption(
     np.save(bg_mask_path, background_mask)
 
     # Save encrypted blocks as numpy array for lossless decryption
+    # (avoids re-extracting from fused PNG which may alter pixel values)
     enc_blocks_path = os.path.join(metadata_dir, f"{image_basename}_encrypted_blocks.npy")
     enc_blocks_array = np.array(encrypted_blocks, dtype=np.uint8)
     np.save(enc_blocks_path, enc_blocks_array)
     metadata["encryption_metadata"]["output_files"]["encrypted_blocks"] = enc_blocks_path
 
-    # Save original ROI blocks for verification
-    original_blocks_path = os.path.join(metadata_dir, f"{image_basename}_original_blocks.npy")
-    original_blocks_array = np.array(blocks, dtype=np.uint8)
-    np.save(original_blocks_path, original_blocks_array)
-    metadata["encryption_metadata"]["output_files"]["original_blocks"] = original_blocks_path
 
     # Save metadata
     metadata_path = os.path.join(metadata_dir, f"{image_basename}_metadata.json")

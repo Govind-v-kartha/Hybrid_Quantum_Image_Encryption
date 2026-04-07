@@ -160,19 +160,8 @@ def run_decryption(
     # Start with decrypted background (full image with ROI pixels zeroed)
     reconstructed_image = decrypted_background.copy()
 
-    # For lossless reconstruction, use the original RGB blocks saved during encryption.
-    # The quantum pipeline (NEQR) only works on grayscale and is probabilistic due to 
-    # quantum measurement, so quantum-decrypted blocks have inherent noise.
-    # The original RGB blocks are stored encrypted via AES alongside the metadata,
-    # ensuring zero data loss (PSNR=∞, SSIM=1.0) for the full pipeline.
-    original_blocks_path = enc_meta.get("output_files", {}).get("original_blocks")
-    if original_blocks_path and os.path.exists(original_blocks_path):
-        logger.info("Using stored original RGB blocks for lossless reconstruction")
-        original_blocks_array = np.load(original_blocks_path)
-        reconstruction_blocks = [original_blocks_array[i] for i in range(original_blocks_array.shape[0])]
-    else:
-        logger.warning("Original RGB blocks not found, using quantum-decrypted blocks (lossy)")
-        reconstruction_blocks = decrypted_blocks
+    # Use quantum-decrypted blocks directly (no bypass)
+    reconstruction_blocks = decrypted_blocks
 
     # Reconstruct ROI from blocks
     roi_region = reconstruct_from_blocks(
@@ -222,11 +211,12 @@ def run_decryption(
     save_image((roi_mask * 255).astype(np.uint8), roi_mask_path_out)
     logger.info(f"ROI mask saved: {roi_mask_path_out}")
 
-    # Save decrypted image
+    # Force PNG output for lossless file storage (JPEG would introduce artifacts)
     original_filename = original_info.get("filename", "decrypted.png")
-    decrypted_path = os.path.join(decrypted_dir, f"decrypted_{original_filename}")
+    basename_no_ext = os.path.splitext(original_filename)[0]
+    decrypted_path = os.path.join(decrypted_dir, f"decrypted_{basename_no_ext}.png")
     save_image(reconstructed_image, decrypted_path)
-    logger.info(f"Decrypted image saved: {decrypted_path}")
+    logger.info(f"Decrypted image saved (PNG, lossless): {decrypted_path}")
 
     # ─────────────────────────────────────────────────────────────────
     # STEP 6: Verification (if original available)

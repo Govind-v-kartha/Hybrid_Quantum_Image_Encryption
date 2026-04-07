@@ -114,19 +114,16 @@ def unfuse_encrypted_image(
 
         block = fused_image[y : y + BLOCK_SIZE, x : x + BLOCK_SIZE].copy()
 
-        # Convert to grayscale (take first channel since all 3 are same)
-        if block.ndim == 3:
-            gray_block = block[:, :, 0]
-        else:
-            gray_block = block
-
         # Pad back to full BLOCK_SIZE if at image edge
-        if gray_block.shape != (BLOCK_SIZE, BLOCK_SIZE):
-            padded = np.zeros((BLOCK_SIZE, BLOCK_SIZE), dtype=gray_block.dtype)
-            padded[: gray_block.shape[0], : gray_block.shape[1]] = gray_block
-            gray_block = padded
+        if block.shape[0] != BLOCK_SIZE or block.shape[1] != BLOCK_SIZE:
+            if block.ndim == 3:
+                padded = np.zeros((BLOCK_SIZE, BLOCK_SIZE, block.shape[2]), dtype=block.dtype)
+            else:
+                padded = np.zeros((BLOCK_SIZE, BLOCK_SIZE), dtype=block.dtype)
+            padded[: block.shape[0], : block.shape[1]] = block
+            block = padded
 
-        encrypted_blocks.append(gray_block)
+        encrypted_blocks.append(block)
 
     # Extract background (everything not covered by ROI blocks)
     encrypted_background = fused_image.copy()

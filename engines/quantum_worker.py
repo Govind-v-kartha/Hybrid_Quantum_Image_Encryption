@@ -72,22 +72,18 @@ def _ensure_modules(repo_path: str) -> dict:
     return _modules
 
 
-def _generate_keys_for_block(quantum_seeds, block_id, block_size, modules):
-    """Generate chaotic keys for a single block."""
+def _generate_keys_for_block(quantum_seeds, block_id, block_size, modules, channel_id=0):
+    """Generate chaotic keys for a single block and channel."""
     henon_map = modules["henon_map"]
-    x0 = quantum_seeds["x0"]
-    y0 = quantum_seeds["y0"]
-    alpha = quantum_seeds.get("alpha", 1.8)
-    beta = quantum_seeds.get("beta", 0.015)
+    x0_base = quantum_seeds["x0"]
+    y0_base = quantum_seeds["y0"]
 
-    seed_x = (x0 + block_id * 0.001) % 1.0
-    seed_y = (y0 + block_id * 0.0007) % 1.0
+    # Match quantum_engine.py key generation (with channel_id)
+    np.random.seed(int(x0_base * 1e6) + block_id * 10 + channel_id)
+    x0 = max(0.01, min(0.99, x0_base + block_id * 0.00001 + channel_id * 0.000003))
+    y0 = max(0.01, min(0.99, y0_base + block_id * 0.00001 + channel_id * 0.000003))
 
-    iterations = block_size * block_size + 100
-    x, y = henon_map(seed_x, seed_y, alpha, beta, iterations)
-
-    x = x[100:]
-    y = y[100:]
+    x, y = henon_map(x0, y0, n_iter=block_size)
 
     x = np.nan_to_num(x, nan=0.5, posinf=0.99, neginf=0.01)
     y = np.nan_to_num(y, nan=0.5, posinf=0.99, neginf=0.01)
@@ -107,7 +103,7 @@ def _rgb_to_grayscale(block):
 
 def encrypt_block_worker(args):
     """
-    Encrypt a single 8x8 block. Designed for use with ProcessPoolExecutor.
+    Encrypt a single 32x32 block (per-channel NEQR). For ProcessPoolExecutor.
 
     Args:
         args: Tuple of (block, block_id, quantum_seeds, repo_path, shots)
@@ -126,42 +122,67 @@ def encrypt_block_worker(args):
         q_permutation = modules["quantum_permutation"]
         dna_encode = modules["dna_encode"]
 
-        gray_block = _rgb_to_grayscale(block)
-        bpk, ksk = _generate_keys_for_block(quantum_seeds, block_id, block_size, modules)
-
-        qc = encode_neqr(gray_block)
         n = int(np.log2(block_size))
         num_position_qubits = 2 * n
 
-        qc = q_scramble(qc, bpk, num_position_qubits)
-        qc = q_permutation(qc, ksk, num_position_qubits)
-        scrambled_img = reconstruct_neqr_image(qc, block_size, block_size, shots=shots)
+        # Determine channels
+        if block.ndim == 3:
+            num_channels = block.shape[2]
+            channels = [block[:, :, c].copy() for c in range(num_channels)]
+        else:
+            num_channels = 1
+            channels = [block.copy()]
 
-        DNi0, DNi1, DNi2, DNi3 = dna_encode(scrambled_img, ksk)
+        encrypted_channels = []
+        channel_infos = []
 
-        np.random.seed(int(bpk.sum()) * 1000 + int(ksk.sum()) + block_id)
-        KH = np.random.randint(0, 256, (block_size, block_size), dtype=np.uint8)
-        DKi0, DKi1, DKi2, DKi3 = dna_encode(KH, ksk)
+        for ch_idx, channel in enumerate(channels):
+            bpk, ksk = _generate_keys_for_block(
+                quantum_seeds, block_id, block_size, modules, channel_id=ch_idx
+            )
 
-        encrypted_block = (
-            (DNi0 ^ DKi0) << 6
-            | (DNi1 ^ DKi1) << 4
-            | (DNi2 ^ DKi2) << 2
-            | (DNi3 ^ DKi3)
-        ).astype(np.uint8)
+            qc = encode_neqr(channel)
+            qc = q_scramble(qc, bpk, num_position_qubits)
+            qc = q_permutation(qc, ksk, num_position_qubits)
+            scrambled_img = reconstruct_neqr_image(qc, block_size, block_size, shots=shots)
+
+            DNi0, DNi1, DNi2, DNi3 = dna_encode(scrambled_img, ksk)
+
+            np.random.seed(int(bpk.sum()) * 1000 + int(ksk.sum()) + block_id * 10 + ch_idx)
+            KH = np.random.randint(0, 256, (block_size, block_size), dtype=np.uint8)
+            DKi0, DKi1, DKi2, DKi3 = dna_encode(KH, ksk)
+
+            enc_channel = (
+                (DNi0 ^ DKi0) << 6
+                | (DNi1 ^ DKi1) << 4
+                | (DNi2 ^ DKi2) << 2
+                | (DNi3 ^ DKi3)
+            ).astype(np.uint8)
+
+            encrypted_channels.append(enc_channel)
+            channel_infos.append({
+                "channel_id": ch_idx,
+                "num_qubits": qc.num_qubits,
+                "circuit_depth": qc.depth(),
+                "bpk": bpk.tolist(),
+                "ksk": ksk.tolist(),
+                "KH": KH.tolist(),
+                "DKi0": DKi0.tolist(),
+                "DKi1": DKi1.tolist(),
+                "DKi2": DKi2.tolist(),
+                "DKi3": DKi3.tolist(),
+            })
+
+        if num_channels > 1:
+            encrypted_block = np.stack(encrypted_channels, axis=-1)
+        else:
+            encrypted_block = encrypted_channels[0]
 
         encryption_info = {
             "block_id": block_id,
             "shots": shots,
-            "num_qubits": qc.num_qubits,
-            "circuit_depth": qc.depth(),
-            "bpk": bpk.tolist(),
-            "ksk": ksk.tolist(),
-            "KH": KH.tolist(),
-            "DKi0": DKi0.tolist(),
-            "DKi1": DKi1.tolist(),
-            "DKi2": DKi2.tolist(),
-            "DKi3": DKi3.tolist(),
+            "num_channels": num_channels,
+            "channels": channel_infos,
         }
 
         return block_id, encrypted_block, encryption_info
@@ -171,7 +192,7 @@ def encrypt_block_worker(args):
 
 def decrypt_block_worker(args):
     """
-    Decrypt a single 8x8 block. Designed for use with ProcessPoolExecutor.
+    Decrypt a single 32x32 block (per-channel NEQR). For ProcessPoolExecutor.
 
     Args:
         args: Tuple of (encrypted_block, block_id, quantum_seeds, encryption_info, repo_path, shots)
@@ -190,22 +211,42 @@ def decrypt_block_worker(args):
         reverse_q_permutation = modules["reverse_quantum_permutation"]
         dna_decrypt = modules["dna_decrypt"]
 
-        bpk = np.array(encryption_info["bpk"], dtype=np.uint8)
-        ksk = np.array(encryption_info["ksk"], dtype=np.uint8)
-
-        DKi0 = np.array(encryption_info["DKi0"], dtype=np.uint8)
-        DKi1 = np.array(encryption_info["DKi1"], dtype=np.uint8)
-        DKi2 = np.array(encryption_info["DKi2"], dtype=np.uint8)
-        DKi3 = np.array(encryption_info["DKi3"], dtype=np.uint8)
-
         n = int(np.log2(block_size))
         num_position_qubits = 2 * n
 
-        scrambled_recovered = dna_decrypt(encrypted_block, DKi0, DKi1, DKi2, DKi3, ksk)
-        qc_re = encode_neqr(scrambled_recovered)
-        qc_re = reverse_q_permutation(qc_re, ksk, num_position_qubits)
-        qc_re = reverse_q_scrambling(qc_re, bpk, num_position_qubits)
-        decrypted_block = reconstruct_neqr_image(qc_re, block_size, block_size, shots=shots)
+        channel_infos = encryption_info.get("channels", [])
+        num_channels = encryption_info.get("num_channels", len(channel_infos))
+
+        if encrypted_block.ndim == 3 and num_channels > 1:
+            enc_channels = [encrypted_block[:, :, c] for c in range(num_channels)]
+        else:
+            enc_channels = [encrypted_block if encrypted_block.ndim == 2
+                            else encrypted_block[:, :, 0]]
+
+        decrypted_channels = []
+
+        for ch_idx, enc_channel in enumerate(enc_channels):
+            ch_info = channel_infos[ch_idx]
+
+            bpk = np.array(ch_info["bpk"], dtype=np.uint8)
+            ksk = np.array(ch_info["ksk"], dtype=np.uint8)
+            DKi0 = np.array(ch_info["DKi0"], dtype=np.uint8)
+            DKi1 = np.array(ch_info["DKi1"], dtype=np.uint8)
+            DKi2 = np.array(ch_info["DKi2"], dtype=np.uint8)
+            DKi3 = np.array(ch_info["DKi3"], dtype=np.uint8)
+
+            scrambled_recovered = dna_decrypt(enc_channel, DKi0, DKi1, DKi2, DKi3, ksk)
+            qc_re = encode_neqr(scrambled_recovered)
+            qc_re = reverse_q_permutation(qc_re, ksk, num_position_qubits)
+            qc_re = reverse_q_scrambling(qc_re, bpk, num_position_qubits)
+            dec_channel = reconstruct_neqr_image(qc_re, block_size, block_size, shots=shots)
+
+            decrypted_channels.append(dec_channel)
+
+        if num_channels > 1:
+            decrypted_block = np.stack(decrypted_channels, axis=-1)
+        else:
+            decrypted_block = decrypted_channels[0]
 
         return block_id, decrypted_block
     except Exception as e:

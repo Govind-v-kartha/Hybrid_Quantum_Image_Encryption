@@ -137,10 +137,10 @@ The system guarantees **pixel-perfect reconstruction**:
 
 ## Performance Expectations
 
-| Image Size | ROI Blocks | Estimated Time (shots=1024) |
+| Image Size | ROI Blocks | Estimated Time (shots=16384) |
 |------------|-----------|----------------------------|
 | 256×256    | ~1,000    | 10-20 minutes              |
 | 512×512    | ~4,000    | 30-60 minutes              |
 | 1024×1024  | ~16,000   | 2-4 hours                  |
 
-**Note**: Quantum simulation is computationally expensive. Each block requires quantum circuit creation, gate application, and measurement with 1024+ shots on AerSimulator.
+**Note**: Quantum simulation is computationally expensive. Each block requires quantum circuit creation, gate application, and measurement with 16384+ shots on AerSimulator.

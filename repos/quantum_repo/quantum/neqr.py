@@ -70,37 +70,76 @@ def encode_neqr(image):
 
 
 def reconstruct_neqr_image(qc, height, width, shots=8192):
+    """
+    Reconstruct image from NEQR quantum circuit using majority-vote
+    shot-based measurement for lossless reconstruction.
+
+    For each pixel position (i, j), we accumulate the measurement counts
+    for every observed intensity value and select the intensity with the
+    highest count. This guarantees correctness for deterministic NEQR
+    circuits and provides robustness against measurement noise.
+
+    If any position is not sampled (extremely unlikely with sufficient
+    shots), additional measurement rounds are performed until all
+    positions are covered.
+    """
+    n = int(np.log2(height))
+    num_position_qubits = 2 * n
+    num_intensity_qubits = 8
+    total_positions = height * width
 
     qc_measured = qc.copy()
     qc_measured.measure_all()
 
     simulator = _get_simulator()
     compiled = transpile(qc_measured, simulator, optimization_level=0)
-    job = simulator.run(compiled, shots=shots)
-    result = job.result()
-    counts = result.get_counts()
 
-    n = int(np.log2(height))
-    num_position_qubits = 2 * n
-    num_intensity_qubits = 8
+    # Accumulator: for each (i, j) → {intensity_val: total_count}
+    vote_map = {}
 
+    remaining_shots = shots
+    max_retries = 3
+    attempt = 0
+
+    while remaining_shots > 0 and attempt <= max_retries:
+        run_shots = remaining_shots if attempt == 0 else max(remaining_shots, shots)
+        job = simulator.run(compiled, shots=run_shots)
+        result = job.result()
+        counts = result.get_counts()
+
+        for bitstring, count in counts.items():
+            bitstring = bitstring[::-1]   # endian fix
+
+            pos_bits = bitstring[:num_position_qubits]
+            intensity_bits = bitstring[
+                num_position_qubits : num_position_qubits + num_intensity_qubits
+            ]
+
+            i = int(pos_bits[:n], 2)
+            j = int(pos_bits[n:], 2)
+
+            if i < height and j < width:
+                intensity_val = int(intensity_bits[::-1], 2)  # LSB first
+                key = (i, j)
+                if key not in vote_map:
+                    vote_map[key] = {}
+                vote_map[key][intensity_val] = (
+                    vote_map[key].get(intensity_val, 0) + count
+                )
+
+        # Check completeness
+        if len(vote_map) >= total_positions:
+            break
+
+        # Some positions unsampled — retry with more shots
+        attempt += 1
+        remaining_shots = shots  # full batch for retry
+
+    # Build image from majority votes
     recon_img = np.zeros((height, width), dtype=np.uint8)
-
-    for bitstring, count in counts.items():
-
-        bitstring = bitstring[::-1]   # endian fix (same as MCQI)
-
-        # ── Split position and intensity ──
-        pos_bits = bitstring[:num_position_qubits]
-        intensity_bits = bitstring[
-            num_position_qubits : num_position_qubits + num_intensity_qubits
-        ]
-
-        i = int(pos_bits[:n], 2)
-        j = int(pos_bits[n:], 2)
-
-        if i < height and j < width:
-            intensity_val = int(intensity_bits[::-1], 2)  # LSB first
-            recon_img[i, j] = intensity_val
+    for (i, j), intensity_counts in vote_map.items():
+        # Pick intensity with highest count (majority vote)
+        best_intensity = max(intensity_counts, key=intensity_counts.get)
+        recon_img[i, j] = best_intensity
 
     return recon_img
