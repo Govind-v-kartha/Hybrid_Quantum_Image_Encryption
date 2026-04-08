@@ -14,60 +14,111 @@ def _get_simulator():
     return _cached_simulator
 
 
-def encode_neqr(image):
+# def encode_neqr(image):
+#     height, width = image.shape
+#     n = int(np.log2(height))
+
+#     num_position_qubits = 2 * n
+#     num_intensity_qubits = 8   # NEQR uses 8 bits for grayscale
+
+#     total_qubits = num_position_qubits + num_intensity_qubits
+#     qr = QuantumRegister(total_qubits, 'q')
+#     qc = QuantumCircuit(qr)
+
+#     # ─────────────────────────────────────────────
+#     # Step 1: Superposition of position qubits
+#     # ─────────────────────────────────────────────
+#     for i in range(num_position_qubits):
+#         qc.h(qr[i])
+
+#     # ─────────────────────────────────────────────
+#     # Step 2: NEQR encoding
+#     # ─────────────────────────────────────────────
+#     for i in range(height):
+#         for j in range(width):
+#             pixel_value = int(np.clip(image[i, j], 0, 255))
+#             if pixel_value == 0:
+#                 continue
+
+#             # Binary position
+#             x_bin = format(i, f'0{n}b')
+#             y_bin = format(j, f'0{n}b')
+#             position_bin = x_bin + y_bin
+
+#             # Activate position
+#             for bit_pos, bit in enumerate(position_bin):
+#                 if bit == '1':
+#                     qc.x(qr[bit_pos])
+
+#             # Binary intensity (8-bit)
+#             intensity_bin = format(pixel_value, '08b')
+
+#             controls = [qr[k] for k in range(num_position_qubits)]
+
+#             for bit_idx, bit in enumerate(intensity_bin[::-1]):  # LSB first
+#                 if bit == '1':
+#                     target = qr[num_position_qubits + bit_idx]
+#                     mcx = MCXGate(len(controls))
+#                     qc.append(mcx, controls + [target])
+
+#             # Reset position
+#             for bit_pos, bit in enumerate(position_bin):
+#                 if bit == '1':
+#                     qc.x(qr[bit_pos])
+
+#     return qc
+
+def encode_neqr(image: np.ndarray) -> QuantumCircuit:
+    image = np.asarray(image, dtype=np.uint8)
+    if image.ndim != 2:
+        raise ValueError(f"encode_neqr expects 2D grayscale image, got shape {image.shape}")
+
     height, width = image.shape
+    if height != width:
+        raise ValueError(f"NEQR expects square image, got {height}x{width}")
+    if height == 0 or (height & (height - 1)) != 0:
+        raise ValueError(f"Image size must be power of 2, got {height}")
+
     n = int(np.log2(height))
-
     num_position_qubits = 2 * n
-    num_intensity_qubits = 8   # NEQR uses 8 bits for grayscale
-
+    num_intensity_qubits = 8
     total_qubits = num_position_qubits + num_intensity_qubits
-    qr = QuantumRegister(total_qubits, 'q')
+
+    qr = QuantumRegister(total_qubits, "q")
     qc = QuantumCircuit(qr)
 
-    # ─────────────────────────────────────────────
-    # Step 1: Superposition of position qubits
-    # ─────────────────────────────────────────────
+    # Step 1 — Superposition over positions
     for i in range(num_position_qubits):
         qc.h(qr[i])
 
-    # ─────────────────────────────────────────────
-    # Step 2: NEQR encoding
-    # ─────────────────────────────────────────────
+    # Step 2 — Encode intensity per pixel
     for i in range(height):
         for j in range(width):
             pixel_value = int(np.clip(image[i, j], 0, 255))
             if pixel_value == 0:
                 continue
 
-            # Binary position
-            x_bin = format(i, f'0{n}b')
-            y_bin = format(j, f'0{n}b')
+            x_bin = format(i, f"0{n}b")
+            y_bin = format(j, f"0{n}b")
             position_bin = x_bin + y_bin
 
-            # Activate position
             for bit_pos, bit in enumerate(position_bin):
-                if bit == '1':
+                if bit == "0":
                     qc.x(qr[bit_pos])
 
-            # Binary intensity (8-bit)
-            intensity_bin = format(pixel_value, '08b')
-
+            intensity_bin = format(pixel_value, "08b")
             controls = [qr[k] for k in range(num_position_qubits)]
 
             for bit_idx, bit in enumerate(intensity_bin[::-1]):  # LSB first
-                if bit == '1':
+                if bit == "1":
                     target = qr[num_position_qubits + bit_idx]
-                    mcx = MCXGate(len(controls))
-                    qc.append(mcx, controls + [target])
+                    qc.append(MCXGate(len(controls)), controls + [target])
 
-            # Reset position
             for bit_pos, bit in enumerate(position_bin):
-                if bit == '1':
+                if bit == "0":
                     qc.x(qr[bit_pos])
 
     return qc
-
 
 def reconstruct_neqr_image(qc, height, width, shots=8192):
     """
