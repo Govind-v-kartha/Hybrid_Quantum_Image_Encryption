@@ -83,13 +83,18 @@ def _generate_keys_for_block(quantum_seeds, block_id, block_size, modules, chann
     x0 = max(0.01, min(0.99, x0_base + block_id * 0.00001 + channel_id * 0.000003))
     y0 = max(0.01, min(0.99, y0_base + block_id * 0.00001 + channel_id * 0.000003))
 
-    x, y = henon_map(x0, y0, n_iter=block_size)
+    alpha = float(quantum_seeds.get("alpha", 1.4))
+    beta = float(quantum_seeds.get("beta", 0.3))
+    x, y = henon_map(x0, y0, alpha=alpha, beta=beta, n_iter=block_size)
 
     x = np.nan_to_num(x, nan=0.5, posinf=0.99, neginf=0.01)
     y = np.nan_to_num(y, nan=0.5, posinf=0.99, neginf=0.01)
 
-    bpk = np.floor(np.abs(x) * 256).astype(np.uint8)
-    ksk = np.floor(np.abs(y) * 256).astype(np.uint8)
+    x = np.clip(np.abs(x), 0.0, 0.999999)
+    y = np.clip(np.abs(y), 0.0, 0.999999)
+
+    bpk = np.floor(x * 256).astype(np.uint8)
+    ksk = np.floor(y * 256).astype(np.uint8)
 
     return bpk, ksk
 
