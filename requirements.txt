@@ -5,6 +5,9 @@
 qiskit>=1.0.0
 qiskit-aer>=0.13.0
 
+# Post-Quantum Cryptography (NIST FIPS 203/204)
+liboqs-python>=0.9.0
+
 # Deep learning (FlexiMo)
 torch>=2.0.0
 torchvision>=0.15.0
