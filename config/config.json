@@ -53,5 +53,31 @@
         "date_format": "%Y-%m-%d %H:%M:%S",
         "log_to_file": true,
         "log_filename": "encryption_system.log"
+    },
+    "post_quantum": {
+        "enabled": true,
+        "algorithm": "Kyber768",
+        "recipient_public_key_path": "keys/recipient_kyber768_public.key",
+        "recipient_private_key_path": "keys/recipient_kyber768_private.key",
+        "description": "ML-KEM (NIST FIPS 203) for post-quantum key encapsulation. Set paths to Kyber768 key files. Public key used for encryption, private key for decryption."
+    },
+    "metadata_signature": {
+        "enabled": true,
+        "algorithm": "Dilithium3",
+        "sender_private_key_path": "keys/sender_dilithium3_private.key",
+        "sender_public_key_path": "keys/sender_dilithium3_public.key",
+        "description": "ML-DSA (NIST FIPS 204) for metadata bundle signing. Ensures metadata integrity and sender authenticity. Sender uses private key to sign, receiver uses public key to verify before decryption."
+    },
+    "key_protection": {
+        "enabled": true,
+        "algorithm": "Scrypt + AES-256-GCM",
+        "passphrase": "change-this-passphrase-in-production",
+        "scrypt_params": {
+            "n": 16384,
+            "r": 8,
+            "p": 1,
+            "description": "n=2^14 (memory cost), r=8 (block size), p=1 (parallelization)"
+        },
+        "description": "Encrypts raw key material at rest. Never store keys in plaintext. In production, replace passphrase with HSM/TPM key slot. Keys are encrypted with Scrypt-derived key encryption key (KEK) + AES-256-GCM."
     }
 }

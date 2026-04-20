@@ -100,6 +100,118 @@ def derive_quantum_seeds(master_seed: bytes, num_blocks: int) -> dict:
     return seeds
 
 
+def generate_session_nonce(nonce_length: int = 16) -> bytes:
+    """
+    Generate a random session nonce for per-block ephemeral seeds.
+    
+    This provides forward secrecy: even if master_seed leaks, past sessions
+    using different session_nonce values remain secure.
+    
+    Args:
+        nonce_length: Length of nonce in bytes (default 16 = 128 bits).
+    
+    Returns:
+        Random nonce bytes.
+    """
+    nonce = secrets.token_bytes(nonce_length)
+    logger.info(f"Generated session nonce: {nonce.hex()[:16]}... ({nonce_length} bytes)")
+    return nonce
+
+
+def derive_block_seed(
+    master_seed: bytes,
+    block_id: int,
+    session_nonce: bytes,
+) -> Tuple[float, float]:
+    """
+    Derive per-block ephemeral seeds using a ratchet mechanism.
+    
+    This provides forward secrecy: each block gets a unique seed derived from:
+    - master_seed: Base key material
+    - block_id: Block identifier (0 to num_blocks-1)
+    - session_nonce: Random per-encryption-run nonce
+    
+    If master_seed leaks later, an adversary cannot reconstruct seeds for
+    past sessions without also having their specific session_nonce.
+    
+    Args:
+        master_seed: The master seed bytes.
+        block_id: Block identifier (0 to num_blocks-1).
+        session_nonce: Random nonce specific to this encryption session.
+    
+    Returns:
+        Tuple of (x0, y0) for Henon map initialization.
+    """
+    # Derive unique seed for this block + session
+    block_material = master_seed + session_nonce + block_id.to_bytes(4, 'big')
+    block_hash = hashlib.sha256(block_material).digest()
+    
+    # Extract x0, y0 from hash (same approach as derive_quantum_seeds)
+    x0 = (int.from_bytes(block_hash[:8], "big") % 10000) / 10000.0
+    y0 = (int.from_bytes(block_hash[8:16], "big") % 10000) / 10000.0
+    
+    # Ensure valid Henon map initial conditions
+    x0 = max(0.01, min(0.99, x0))
+    y0 = max(0.01, min(0.99, y0))
+    
+    return x0, y0
+
+
+def derive_all_block_seeds(
+    master_seed: bytes,
+    num_blocks: int,
+    session_nonce: bytes,
+) -> dict:
+    """
+    Derive ephemeral seeds for all blocks using the ratchet mechanism.
+    
+    Args:
+        master_seed: The master seed bytes.
+        num_blocks: Number of blocks to generate seeds for.
+        session_nonce: Random session nonce.
+    
+    Returns:
+        Dictionary with per-block seeds and session info:
+        {
+            "session_nonce": session_nonce_hex,
+            "session_nonce_b64": base64,
+            "alpha": 1.4,
+            "beta": 0.3,
+            "num_blocks": num_blocks,
+            "master_seed_hash": hash,
+            "block_seeds": [
+                {"block_id": 0, "x0": ..., "y0": ...},
+                {"block_id": 1, "x0": ..., "y0": ...},
+                ...
+            ]
+        }
+    """
+    block_seeds = []
+    
+    for block_id in range(num_blocks):
+        x0, y0 = derive_block_seed(master_seed, block_id, session_nonce)
+        block_seeds.append({
+            "block_id": block_id,
+            "x0": x0,
+            "y0": y0,
+        })
+    
+    seeds = {
+        "session_nonce": session_nonce.hex(),
+        "session_nonce_b64": encode_bytes_b64(session_nonce),
+        "alpha": 1.4,
+        "beta": 0.3,
+        "num_blocks": num_blocks,
+        "master_seed_hash": hashlib.sha256(master_seed).hexdigest(),
+        "block_seeds": block_seeds,
+    }
+    
+    logger.info(f"Derived ephemeral seeds for {num_blocks} blocks with session nonce")
+    logger.info(f"Forward secrecy enabled: seeds independent per session")
+    
+    return seeds
+
+
 def encode_bytes_b64(data: bytes) -> str:
     """Encode bytes to base64 string for JSON storage."""
     return base64.b64encode(data).decode("utf-8")

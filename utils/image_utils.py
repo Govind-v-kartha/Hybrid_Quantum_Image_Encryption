@@ -154,3 +154,193 @@ def list_input_images(input_dir: str) -> list:
 
     logger.info(f"Found {len(images)} image(s) in {input_dir}")
     return images
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PNG Metadata Embedding - Dependency Warning & Bundle ID
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def embed_png_metadata(image_path: str, metadata_dict: dict) -> None:
+    """
+    Embed custom tEXt chunks into a PNG file to store dependency information.
+    
+    This prevents silent data loss by explicitly marking that the PNG requires
+    accompanying files (specifically st2_background.enc) for full decryption.
+    
+    Args:
+        image_path: Path to the PNG file
+        metadata_dict: Dictionary with keys like:
+            - "DependencyWarning": "This image requires st2_background.enc"
+            - "BundleID": SHA256 hash of metadata.json
+            - "ImageType": "Encrypted"
+            - "EncryptionMethod": "Hybrid Quantum-Classical"
+            - "RequiredFiles": "st2_background.enc, st2_metadata.json, st2_bundle.sig"
+    
+    Raises:
+        FileNotFoundError: If image file not found
+        ValueError: If not a PNG file
+    """
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"PNG file not found: {image_path}")
+    
+    if not image_path.lower().endswith('.png'):
+        raise ValueError(f"File must be PNG format: {image_path}")
+    
+    logger.info(f"🏷️  Embedding PNG metadata: {image_path}")
+    
+    try:
+        # Open PNG with PIL to access metadata
+        with Image.open(image_path) as img:
+            # Create PIL metadata for tEXt chunks
+            pil_metadata = img.info.copy() if hasattr(img, 'info') else {}
+            
+            # Add custom tEXt chunks (prefixed with special marker)
+            for key, value in metadata_dict.items():
+                if isinstance(value, bytes):
+                    value = value.decode('utf-8')
+                pil_metadata[key] = str(value)
+            
+            # Save PNG with embedded metadata
+            # PNG metadata is automatically saved with tEXt chunks
+            img.save(image_path, 'PNG', pnginfo=Image.PngImagePlugin.PngInfo())
+            
+            # Re-open and add metadata manually using PIL's lower-level API
+            # because PIL doesn't always preserve metadata on save
+            from PIL.PngImagePlugin import PngImageFile, PngInfo
+            
+            img = Image.open(image_path)
+            pnginfo = PngInfo()
+            
+            # Add tEXt chunks
+            for key, value in metadata_dict.items():
+                if isinstance(value, bytes):
+                    value = value.decode('utf-8')
+                # PNG tEXt chunk format: keyword + null terminator + text
+                pnginfo.add_text(str(key), str(value))
+            
+            img.save(image_path, 'PNG', pnginfo=pnginfo)
+            logger.info(f"✅ PNG metadata embedded: {len(metadata_dict)} chunks added")
+    
+    except Exception as e:
+        logger.error(f"❌ Failed to embed PNG metadata: {e}")
+        raise RuntimeError(f"PNG metadata embedding failed: {e}")
+
+
+def read_png_metadata(image_path: str) -> dict:
+    """
+    Read custom tEXt chunks from a PNG file.
+    
+    Extracts dependency information embedded by embed_png_metadata().
+    
+    Args:
+        image_path: Path to the PNG file
+    
+    Returns:
+        Dictionary with embedded metadata (tEXt chunks)
+        Empty dict if no metadata found
+    
+    Raises:
+        FileNotFoundError: If image file not found
+        ValueError: If not a PNG file
+    """
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"PNG file not found: {image_path}")
+    
+    if not image_path.lower().endswith('.png'):
+        raise ValueError(f"File must be PNG format: {image_path}")
+    
+    try:
+        with Image.open(image_path) as img:
+            # PIL stores PNG tEXt chunks in img.info dictionary
+            metadata = {}
+            
+            if hasattr(img, 'info') and img.info:
+                # Extract all tEXt chunk data
+                for key, value in img.info.items():
+                    # PNG tEXt chunks that aren't standard PIL keys
+                    if key not in ['DPI', 'gamma', 'duration', 'loop', 'default_image']:
+                        metadata[key] = value
+            
+            logger.info(f"📖 PNG metadata read: {len(metadata)} chunks found")
+            return metadata
+    
+    except Exception as e:
+        logger.error(f"❌ Failed to read PNG metadata: {e}")
+        raise RuntimeError(f"PNG metadata reading failed: {e}")
+
+
+def verify_png_dependencies(image_path: str, metadata_path: str = None) -> dict:
+    """
+    Verify that PNG has dependency metadata and optionally verify bundle ID.
+    
+    Args:
+        image_path: Path to the encrypted PNG file
+        metadata_path: Optional path to metadata.json for bundle ID verification
+    
+    Returns:
+        Dictionary with verification results:
+            - "has_metadata": bool
+            - "has_dependency_warning": bool
+            - "has_bundle_id": bool
+            - "bundle_id_matches": bool (if metadata_path provided)
+            - "required_files": list of required files
+    
+    Raises:
+        FileNotFoundError: If image not found
+    """
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"PNG file not found: {image_path}")
+    
+    logger.info(f"🔍 Verifying PNG dependencies: {image_path}")
+    
+    verification = {
+        "has_metadata": False,
+        "has_dependency_warning": False,
+        "has_bundle_id": False,
+        "bundle_id_matches": False,
+        "required_files": []
+    }
+    
+    try:
+        # Read embedded metadata
+        metadata = read_png_metadata(image_path)
+        
+        if metadata:
+            verification["has_metadata"] = True
+            
+            # Check for dependency warning
+            if "DependencyWarning" in metadata:
+                verification["has_dependency_warning"] = True
+                logger.info(f"⚠️  Dependency warning found: {metadata['DependencyWarning']}")
+            
+            # Check for bundle ID
+            if "BundleID" in metadata:
+                verification["has_bundle_id"] = True
+                embedded_bundle_id = metadata["BundleID"]
+                logger.info(f"Bundle ID: {embedded_bundle_id}")
+                
+                # Verify bundle ID if metadata path provided
+                if metadata_path and os.path.exists(metadata_path):
+                    with open(metadata_path, "rb") as f:
+                        metadata_bytes = f.read()
+                    expected_bundle_id = hashlib.sha256(metadata_bytes).hexdigest()[:16]
+                    
+                    if embedded_bundle_id.startswith(expected_bundle_id):
+                        verification["bundle_id_matches"] = True
+                        logger.info("✅ Bundle ID verified")
+                    else:
+                        logger.warning(f"❌ Bundle ID mismatch: embedded={embedded_bundle_id}, expected={expected_bundle_id}")
+            
+            # Extract required files
+            if "RequiredFiles" in metadata:
+                required_str = metadata["RequiredFiles"]
+                verification["required_files"] = [f.strip() for f in required_str.split(",")]
+                logger.info(f"Required files: {verification['required_files']}")
+        else:
+            logger.warning("⚠️  No embedded metadata found in PNG")
+    
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to verify PNG dependencies: {e}")
+    
+    return verification

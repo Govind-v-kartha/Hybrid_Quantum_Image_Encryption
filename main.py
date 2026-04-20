@@ -42,6 +42,57 @@ if __name__ != "__mp_main__":
     logger = setup_logger("MAIN", os.path.join(PROJECT_ROOT, "config", "config.json"))
 
 
+def verify_dependencies() -> bool:
+    """
+    Verify that all critical dependencies are available.
+    
+    Returns:
+        True if all dependencies are available
+        
+    Raises:
+        RuntimeError: If critical dependencies are missing
+    """
+    critical_missing = []
+    optional_missing = []
+    
+    # Check critical imports
+    critical_modules = {
+        'torch': 'Deep Learning (PyTorch)',
+        'cv2': 'Computer Vision (OpenCV)',
+        'numpy': 'Numerical Computing',
+        'PIL': 'Image Processing (Pillow)',
+        'cryptography': 'Cryptography Library'
+    }
+    
+    for module, name in critical_modules.items():
+        try:
+            __import__(module)
+        except ImportError:
+            critical_missing.append(f"{name} ({module})")
+    
+    # Check optional PQC import
+    try:
+        import oqs
+    except BaseException as e:
+        optional_missing.append(f"Post-Quantum Cryptography (liboqs-python): {str(e)[:60]}")
+    
+    # Report findings
+    if critical_missing:
+        logger.error("❌ CRITICAL DEPENDENCIES MISSING:")
+        for dep in critical_missing:
+            logger.error(f"   - {dep}")
+        raise RuntimeError("Missing critical dependencies. Please run: pip install -r requirements.txt")
+    
+    if optional_missing:
+        logger.warning("⚠️  OPTIONAL DEPENDENCIES MISSING:")
+        for dep in optional_missing:
+            logger.warning(f"   - {dep}")
+        logger.warning("   Post-quantum encryption features will be UNAVAILABLE.")
+        logger.warning("   Run: pip install --upgrade --force-reinstall liboqs-python")
+    
+    return True
+
+
 def verify_repositories() -> bool:
     """
     Verify that both external repositories are present and valid.
@@ -455,6 +506,11 @@ Advanced (single mode):
 
     # Startup checks
     logger.info("Running startup verification...")
+    try:
+        verify_dependencies()
+    except RuntimeError as e:
+        logger.error(f"Dependency check failed: {e}")
+        sys.exit(1)
     verify_structure()
     verify_repositories()
 

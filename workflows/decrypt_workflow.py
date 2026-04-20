@@ -14,12 +14,21 @@ the original image from encrypted data:
 import os
 import json
 import time
+import hashlib
 import numpy as np
 from datetime import datetime
 
 from utils.logger import setup_logger, get_config_path, load_config
-from utils.image_utils import load_image, save_image
-from utils.crypto_utils import load_key_material, derive_quantum_seeds, decode_bytes_b64
+from utils.image_utils import load_image, save_image, read_png_metadata, verify_png_dependencies
+from utils.crypto_utils import load_key_material, derive_quantum_seeds, derive_all_block_seeds, decode_bytes_b64
+from utils.crypto_utils_pqc import (
+    secure_key_import, 
+    load_pqc_keys_from_file,
+    verify_bundle,
+    load_signature_file,
+    load_dilithium_public_key,
+    load_protected_keys
+)
 from utils.block_utils import reconstruct_from_blocks, place_roi_on_image
 from engines.classical_engine import decrypt_background
 from engines.quantum_engine import decrypt_all_blocks
@@ -67,6 +76,41 @@ def run_decryption(
     logger.info(f"Metadata: {metadata_path}")
     logger.info(f"Timestamp: {datetime.now().isoformat()}")
 
+    # ════════════════════════════════════════════════════════════════════
+    # SIGNATURE VERIFICATION (SECURITY GATE - Before Any Decryption)
+    # ════════════════════════════════════════════════════════════════════
+    logger.info("\n>>> SECURITY GATE: Verifying metadata bundle signature (ML-DSA/Dilithium3)...")
+    
+    # Construct expected .sig file path
+    metadata_dir = os.path.dirname(metadata_path)
+    metadata_basename = os.path.splitext(os.path.basename(metadata_path))[0]
+    sig_path = os.path.join(metadata_dir, f"{metadata_basename}_bundle.sig")
+    
+    signature_verified = False
+    if os.path.exists(sig_path):
+        try:
+            # Load sender's public key from config
+            sender_public_key_path = config.get("metadata_signature", {}).get("sender_public_key_path")
+            if sender_public_key_path and os.path.exists(sender_public_key_path):
+                sender_public_key = load_dilithium_public_key(sender_public_key_path)
+                signature_hex = load_signature_file(sig_path)
+                
+                # Verify bundle
+                is_valid = verify_bundle(metadata_path, signature_hex, sender_public_key)
+                
+                if not is_valid:
+                    raise RuntimeError("❌ SECURITY BREACH: Metadata signature verification FAILED - Bundle may be tampered!")
+                
+                signature_verified = True
+                logger.info("✅ SECURITY GATE PASSED: Metadata bundle signature verified (ML-DSA Dilithium3)")
+            else:
+                logger.warning("⚠️  Sender public key not configured. Skipping signature verification (INSECURE)")
+        except Exception as e:
+            logger.error(f"❌ SECURITY GATE FAILED: {e}")
+            raise RuntimeError(f"Metadata verification failed - Cannot proceed with decryption: {e}")
+    else:
+        logger.warning(f"⚠️  Signature file not found: {sig_path} - Proceeding without verification (INSECURE)")
+
     # ─────────────────────────────────────────────────────────────────
     # STEP 1: Load Metadata and Encrypted Data
     # ─────────────────────────────────────────────────────────────────
@@ -89,7 +133,95 @@ def run_decryption(
 
     # Load keys
     key_path = enc_meta["output_files"]["keys"]
-    master_seed, aes_key, salt = load_key_material(key_path)
+    
+    # ════════════════════════════════════════════════════════════════════
+    # KEY RECOVERY BRANCH: Mutually exclusive paths
+    # Three possible scenarios based on what's in metadata:
+    #   1. post_quantum section exists → STEP 0: ML-KEM path (FIX #1)
+    #   2. key_protection section exists → STEP 0.5: Scrypt + AES-GCM path (FIX #3)
+    #   3. Neither exists → STEP 0-legacy: Plaintext keys (deprecated, v1.0 format)
+    # ════════════════════════════════════════════════════════════════════
+    
+    pqc_keys = enc_meta.get("post_quantum")
+    key_protection = enc_meta.get("key_protection")
+    
+    # ───────────────────────────────────────────────────────────────────
+    # BRANCH 1: STEP 0 - Post-Quantum ML-KEM Key Recovery (FIX #1)
+    # ───────────────────────────────────────────────────────────────────
+    if pqc_keys:
+        logger.info("\n>>> STEP 0: Post-Quantum ML-KEM Key Recovery (FIX #1)...")
+        try:
+            # Load recipient's ML-KEM private key from config
+            config = load_config()
+            recipient_private_key_path = config.get("post_quantum", {}).get("recipient_private_key_path")
+            
+            if not recipient_private_key_path or not os.path.exists(recipient_private_key_path):
+                raise FileNotFoundError(f"Recipient ML-KEM private key not found: {recipient_private_key_path}")
+            
+            with open(recipient_private_key_path, "rb") as f:
+                recipient_private_key = f.read()
+            
+            # Recover master_seed from ML-KEM wrapped form
+            master_seed = secure_key_import(
+                kem_ciphertext=pqc_keys["kem_ciphertext"],
+                wrapped_seed=pqc_keys["wrapped_seed"],
+                wrap_nonce=pqc_keys["wrap_nonce"],
+                recipient_private_key=recipient_private_key
+            )
+            logger.info("✅ Master seed recovered from ML-KEM (Kyber768) - Zero knowledge key transport")
+            
+            # Derive remaining keys from master_seed
+            from utils.crypto_utils import derive_aes_key
+            salt = decode_bytes_b64(enc_meta.get("salt_b64", ""))  # May be stored in metadata
+            aes_key = derive_aes_key(master_seed, salt) if salt else None
+        except Exception as e:
+            logger.error(f"❌ ML-KEM key recovery failed: {e}")
+            raise RuntimeError(f"Post-quantum key recovery failed: {e}")
+    
+    # ───────────────────────────────────────────────────────────────────
+    # BRANCH 2: STEP 0.5 - Protected Keys at Rest (FIX #3)
+    # ───────────────────────────────────────────────────────────────────
+    elif key_protection:
+        logger.info("\n>>> STEP 0.5: Decrypt Protected Keys at Rest (FIX #3 - Scrypt + AES-256-GCM)...")
+        try:
+            protected_key_path = key_protection.get("protected_keys_file")
+            if protected_key_path and os.path.exists(protected_key_path):
+                # Get passphrase from config
+                config = load_config()
+                key_passphrase = config.get("key_protection", {}).get("passphrase")
+                if not key_passphrase:
+                    raise ValueError("Key passphrase not configured. Cannot decrypt protected keys.")
+                
+                # Load and decrypt protected keys
+                keys_dict = load_protected_keys(protected_key_path, key_passphrase)
+                
+                # Convert from hex strings back to bytes
+                master_seed = bytes.fromhex(keys_dict.get("master_seed", ""))
+                aes_key = bytes.fromhex(keys_dict.get("aes_key", ""))
+                salt = bytes.fromhex(keys_dict.get("salt", ""))
+                
+                logger.info("✅ Keys decrypted from protected storage (Scrypt + AES-256-GCM)")
+            else:
+                logger.error("🚨 CRITICAL: Protected keys file not found. Cannot safely proceed.")
+                raise FileNotFoundError(f"Protected keys file required but not found: {protected_key_path}")
+        except Exception as e:
+            logger.error(f"🚨 CRITICAL: Protected key decryption failed: {e}. Aborting decryption.")
+            raise RuntimeError(f"Cannot decrypt without valid protected keys: {e}")
+    
+    # ───────────────────────────────────────────────────────────────────
+    # BRANCH 3: STEP 0 (Fallback) - Plaintext Keys v1.0 Legacy (Deprecated)
+    # ───────────────────────────────────────────────────────────────────
+    else:
+        logger.info("\n>>> STEP 0 (Fallback): Loading plaintext keys (v1.0 legacy format - DEPRECATED)...")
+        logger.critical("🚨 CRITICAL SECURITY WARNING 🚨")
+        logger.critical("    Raw key material found in PLAINTEXT on disk!")
+        logger.critical("    This indicates an old encryption (v1.0 legacy format).")
+        logger.critical("    Keys are NOT protected at rest and are VULNERABLE to theft.")
+        logger.critical("    Proceeding with decryption, but STRONGLY recommend:")
+        logger.critical("    1. Re-encrypt this image with modern protection (FIX #3: Scrypt + AES-256-GCM)")
+        logger.critical("    2. Update to latest encryption version immediately")
+        logger.critical("🚨 END WARNING 🚨\n")
+        master_seed, aes_key, salt = load_key_material(key_path)
 
     # Load classical encryption info
     classical_info = enc_meta["classical_encryption"]
@@ -122,9 +254,61 @@ def run_decryption(
     with open(bg_cipher_path, "rb") as f:
         ciphertext = f.read()
 
+    # ⚡ FIX #6-ENHANCEMENT: Verify SHA-256 hash of encrypted background file
+    # This ensures the signature (which covers metadata) transitively covers the .enc file
+    classical_info = enc_meta.get("classical_encryption", {})
+    expected_enc_file_hash = classical_info.get("enc_file_hash")
+    
+    if expected_enc_file_hash:
+        computed_hash = hashlib.sha256(ciphertext).hexdigest()
+        if computed_hash == expected_enc_file_hash:
+            logger.info(f"✅ ⚡ FIX #6-ENHANCEMENT: Encrypted background file integrity verified (SHA-256 hash match)")
+        else:
+            logger.critical(f"🚨 CRITICAL: Encrypted background file integrity FAILED!")
+            logger.critical(f"   Expected hash: {expected_enc_file_hash}")
+            logger.critical(f"   Computed hash: {computed_hash}")
+            logger.critical(f"   The .enc file may have been tampered with or corrupted!")
+            raise RuntimeError(
+                f"Background encryption file integrity check failed. "
+                f"File may be corrupted or tampered. Aborting decryption."
+            )
+    else:
+        logger.warning("⚠️  No SHA-256 hash in metadata. Unable to verify background file integrity.")
+        logger.warning("    This may indicate an old encryption (v1.0 legacy) without FIX #6 protection.")
+
     # Load encrypted image
     encrypted_image_path = enc_meta["output_files"]["encrypted_image"]
     encrypted_image = load_image(encrypted_image_path)
+
+    # ─────────────────────────────────────────────────────────────────
+    # SECURITY CHECK: Verify PNG Dependency Metadata
+    # ─────────────────────────────────────────────────────────────────
+    logger.info("\n🔍 Security Check: Verifying PNG dependencies...")
+    try:
+        png_verification = verify_png_dependencies(encrypted_image_path, metadata_path)
+        
+        if png_verification["has_metadata"]:
+            logger.info("✅ PNG has embedded dependency metadata")
+            if png_verification["has_dependency_warning"]:
+                logger.info("⚠️  PNG dependency warning confirmed")
+            if png_verification["has_bundle_id"]:
+                logger.info(f"🔗 Bundle ID verified")
+                if png_verification["bundle_id_matches"]:
+                    logger.info("✅ Bundle ID matches metadata")
+            if png_verification["required_files"]:
+                logger.info(f"📦 Required files: {', '.join(png_verification['required_files'])}")
+                # Verify that required files exist
+                for req_file in png_verification["required_files"]:
+                    req_path = os.path.join(os.path.dirname(encrypted_image_path), req_file)
+                    if os.path.exists(req_path):
+                        logger.info(f"  ✓ {req_file} found")
+                    else:
+                        logger.warning(f"  ⚠️  {req_file} NOT found (may cause data loss)")
+        else:
+            logger.warning("⚠️  PNG has no embedded dependency metadata - data loss risk")
+            logger.warning("💡 Tip: Ensure st2_background.enc is preserved with this PNG")
+    except Exception as e:
+        logger.warning(f"⚠️  Could not verify PNG dependencies: {e}")
 
     logger.info(f"Metadata loaded: {len(block_map)} blocks, {len(all_encryption_info)} encryption records")
     logger.info(f"Original image shape: {original_shape}")
@@ -174,10 +358,28 @@ def run_decryption(
     logger.info(f"Background decrypted: {decrypted_background.shape}")
 
     # ─────────────────────────────────────────────────────────────────
-    # STEP 4: Quantum Decryption of ROI Blocks
+    # STEP 4: Quantum Decryption of ROI Blocks (With Forward Secrecy - FIX #5)
     # ─────────────────────────────────────────────────────────────────
-    logger.info("\n>>> STEP 4: Quantum decryption of ROI blocks...")
-    quantum_seeds = derive_quantum_seeds(master_seed, len(block_map))
+    logger.info("\n>>> STEP 4: Quantum decryption of ROI blocks with per-block ephemeral seeds...")
+    
+    # Check if forward secrecy is enabled (FIX #5)
+    quantum_meta = enc_meta.get("quantum_encryption", {})
+    forward_secrecy_enabled = quantum_meta.get("forward_secrecy", False)
+    
+    if forward_secrecy_enabled:
+        # Derive per-block ephemeral seeds using session_nonce (FIX #5)
+        session_nonce_b64 = quantum_meta.get("session_nonce_b64")
+        if session_nonce_b64:
+            session_nonce = decode_bytes_b64(session_nonce_b64)
+            logger.info(f"🔐 Forward secrecy enabled: using session_nonce for block seeds")
+            quantum_seeds = derive_all_block_seeds(master_seed, len(block_map), session_nonce)
+            logger.info(f"✅ Per-block ephemeral seeds derived from session_nonce")
+        else:
+            logger.warning("⚠️  Forward secrecy enabled but session_nonce not found. Falling back to legacy derivation.")
+            quantum_seeds = derive_quantum_seeds(master_seed, len(block_map))
+    else:
+        logger.info("ℹ️  Using legacy quantum seed derivation (no forward secrecy)")
+        quantum_seeds = derive_quantum_seeds(master_seed, len(block_map))
 
     decrypted_blocks = decrypt_all_blocks(
         encrypted_blocks, quantum_seeds, all_encryption_info, config

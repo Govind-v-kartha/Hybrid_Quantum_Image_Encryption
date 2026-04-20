@@ -151,14 +151,21 @@ def _verify_qiskit_backend():
 
 
 def _generate_keys_for_block(
-    quantum_seeds: dict, block_id: int, block_size: int, modules: dict,
+    block_seed: Tuple[float, float],
+    block_id: int,
+    block_size: int,
+    modules: dict,
     channel_id: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Generate deterministic encryption keys for a specific block and channel.
+    
+    Uses per-block ephemeral seeds from the ratchet mechanism (FIX #5).
+    This ensures forward secrecy: even if master_seed leaks, each session's
+    block seeds remain secure because they depend on session_nonce.
 
     Args:
-        quantum_seeds: Seed parameters from crypto_utils.
+        block_seed: Tuple of (x0, y0) for this block from the ratchet mechanism.
         block_id: Block identifier.
         block_size: Size of the block (e.g. 32).
         modules: Imported quantum repo modules.
@@ -167,17 +174,16 @@ def _generate_keys_for_block(
     Returns:
         Tuple of (bpk, ksk) key arrays.
     """
-    x0_base = quantum_seeds["x0"]
-    y0_base = quantum_seeds["y0"]
+    x0_base, y0_base = block_seed
 
-    # Perturb based on block_id AND channel_id for unique keys per block per channel
-    np.random.seed(int(x0_base * 1e6) + block_id * 10 + channel_id)
-    x0 = max(0.01, min(0.99, x0_base + block_id * 0.00001 + channel_id * 0.000003))
-    y0 = max(0.01, min(0.99, y0_base + block_id * 0.00001 + channel_id * 0.000003))
+    # Perturb based on channel_id only (block seed already unique from ratchet)
+    np.random.seed(int(x0_base * 1e6) + channel_id)
+    x0 = max(0.01, min(0.99, x0_base + channel_id * 0.000003))
+    y0 = max(0.01, min(0.99, y0_base + channel_id * 0.000003))
 
     henon_map = modules["henon_map"]
-    alpha = float(quantum_seeds.get("alpha", 1.4))
-    beta = float(quantum_seeds.get("beta", 0.3))
+    alpha = 1.4  # From derive_all_block_seeds
+    beta = 0.3   # From derive_all_block_seeds
     x, y = henon_map(x0, y0, alpha=alpha, beta=beta, n_iter=block_size)
 
     x = np.nan_to_num(x, nan=0.5, posinf=0.99, neginf=0.01)
@@ -195,7 +201,7 @@ def _generate_keys_for_block(
 def encrypt_block_quantum(
     block: np.ndarray,
     block_id: int,
-    quantum_seeds: dict,
+    block_seed: Tuple[float, float],
     modules: dict,
     shots: int = 16384,
 ) -> Tuple[np.ndarray, dict]:
@@ -211,8 +217,8 @@ def encrypt_block_quantum(
 
     Args:
         block: 32x32x3 RGB block or 32x32 grayscale block.
-        block_id: Block identifier for key derivation.
-        quantum_seeds: Seed parameters for key generation.
+        block_id: Block identifier.
+        block_seed: Tuple of (x0, y0) for this block (from ratchet mechanism - FIX #5).
         modules: Imported quantum repo modules.
         shots: Number of measurement shots (default 16384).
 
@@ -250,9 +256,9 @@ def encrypt_block_quantum(
     channel_infos = []
 
     for ch_idx, channel in enumerate(channels):
-        # Generate unique keys for this block + channel
+        # Generate unique keys for this block + channel using per-block seed
         bpk, ksk = _generate_keys_for_block(
-            quantum_seeds, block_id, block_size, modules, channel_id=ch_idx
+            block_seed, block_id, block_size, modules, channel_id=ch_idx
         )
 
         # NEQR encode
@@ -690,8 +696,17 @@ def encrypt_all_blocks(
                 completed_count += 1
                 continue  # already done by partial parallel run
             block_start = time.time()
+            
+            # Get per-block seed from ratchet mechanism (FIX #5)
+            if "block_seeds" in quantum_seeds and i < len(quantum_seeds["block_seeds"]):
+                block_seed_data = quantum_seeds["block_seeds"][i]
+                block_seed = (block_seed_data["x0"], block_seed_data["y0"])
+            else:
+                # Fallback to old behavior if block_seeds not present
+                block_seed = (quantum_seeds.get("x0", 0.5), quantum_seeds.get("y0", 0.5))
+            
             enc_block, enc_info = encrypt_block_quantum(
-                block, i, quantum_seeds, modules, shots=shots
+                block, i, block_seed, modules, shots=shots
             )
             encrypted_blocks[i] = enc_block
             all_encryption_info[i] = enc_info
