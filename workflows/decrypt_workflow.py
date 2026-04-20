@@ -97,9 +97,25 @@ def run_decryption(
     tag = decode_bytes_b64(classical_info["tag"])
     bg_image_shape = tuple(classical_info["image_shape"])
 
-    # Load ROI mask
-    roi_mask_path = enc_meta["roi_information"]["roi_mask_path"]
-    roi_mask = np.load(roi_mask_path)
+    # ════════════════════════════════════════════════════════════════════
+    # HYBRID PHASE 4: Load ROI mask from metadata (no .npy files)
+    # ════════════════════════════════════════════════════════════════════
+    from utils.crypto_utils import decode_ndarray_b64
+
+    roi_mask_b64 = enc_meta["roi_information"].get("roi_mask_b64")
+    if roi_mask_b64:
+        roi_mask_shape = tuple(enc_meta["roi_information"]["roi_mask_shape"])
+        roi_mask_dtype = enc_meta["roi_information"]["roi_mask_dtype"]
+        roi_mask = decode_ndarray_b64(roi_mask_b64, roi_mask_shape, roi_mask_dtype)
+        logger.info(f"Loaded ROI mask from metadata: {roi_mask_shape}")
+    else:
+        # Fallback for old format (backward compat)
+        roi_mask_path = enc_meta["roi_information"].get("roi_mask_path")
+        if roi_mask_path and os.path.exists(roi_mask_path):
+            roi_mask = np.load(roi_mask_path)
+            logger.info(f"Loaded ROI mask from {roi_mask_path} (old .npy format)")
+        else:
+            raise ValueError("ROI mask not found in metadata or file")
 
     # Load encrypted background
     bg_cipher_path = enc_meta["output_files"]["encrypted_background"]
@@ -114,22 +130,38 @@ def run_decryption(
     logger.info(f"Original image shape: {original_shape}")
 
     # ─────────────────────────────────────────────────────────────────
-    # STEP 2: Load Encrypted Blocks
+    # STEP 2: Load Encrypted Blocks from Metadata (Pure Image-Only)
     # ─────────────────────────────────────────────────────────────────
-    logger.info("\n>>> STEP 2: Loading encrypted blocks...")
+    logger.info("\n>>> STEP 2: Loading encrypted blocks from metadata...")
 
-    # Load encrypted blocks from saved numpy file (lossless, no edge clipping)
-    enc_blocks_path = enc_meta.get("output_files", {}).get("encrypted_blocks")
-    if enc_blocks_path and os.path.exists(enc_blocks_path):
-        enc_blocks_array = np.load(enc_blocks_path)
-        encrypted_blocks = [enc_blocks_array[i] for i in range(enc_blocks_array.shape[0])]
-        logger.info(f"Loaded {len(encrypted_blocks)} encrypted blocks from {enc_blocks_path}")
-    else:
-        # Fallback: extract from fused image (may clip edge blocks)
-        logger.warning("Encrypted blocks file not found, extracting from fused image (may lose edge data)")
-        encrypted_blocks, encrypted_bg = unfuse_encrypted_image(
-            encrypted_image, block_map, roi_mask
+    # Load encrypted blocks from metadata (PRIMARY SOURCE - no .npy fallback)
+    blocks_b64 = enc_meta["output_files"].get("encrypted_blocks_b64")
+    if blocks_b64:
+        blocks_shapes = enc_meta["output_files"]["encrypted_blocks_shapes"]
+        blocks_dtype = enc_meta["output_files"]["encrypted_blocks_dtype"]
+        
+        encrypted_blocks = []
+        for b64_str, shape in zip(blocks_b64, blocks_shapes):
+            block = decode_ndarray_b64(b64_str, tuple(shape), blocks_dtype)
+            encrypted_blocks.append(block)
+        
+        logger.info(
+            f"Loaded {len(encrypted_blocks)} encrypted blocks from metadata "
+            f"(aligned bbox: all {encrypted_blocks[0].shape[0]}×{encrypted_blocks[0].shape[1]}, no padding, image-only)"
         )
+    else:
+        # Fallback for old format (backward compat with .npy)
+        enc_blocks_path = enc_meta["output_files"].get("encrypted_blocks")
+        if enc_blocks_path and os.path.exists(enc_blocks_path):
+            enc_blocks_array = np.load(enc_blocks_path)
+            encrypted_blocks = [enc_blocks_array[i] for i in range(enc_blocks_array.shape[0])]
+            logger.info(f"Loaded blocks from {enc_blocks_path} (old .npy format)")
+        else:
+            raise RuntimeError(
+                "Encrypted blocks not found in metadata or .npy file. "
+                "Cannot proceed with image-only decryption."
+            )
+    
     logger.info(f"Separated {len(encrypted_blocks)} encrypted blocks")
 
     # ─────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import secrets
 import base64
 import json
 from typing import Tuple
+import numpy as np
 
 from utils.logger import setup_logger, get_config_path
 
@@ -160,3 +161,34 @@ def load_key_material(key_path: str) -> Tuple[bytes, bytes, bytes]:
     salt = decode_bytes_b64(key_data["salt"])
     logger.info(f"Key material loaded from {key_path}")
     return master_seed, aes_key, salt
+
+
+def encode_ndarray_b64(arr: np.ndarray) -> str:
+    """
+    Encode numpy array to base64 string for JSON storage.
+
+    Args:
+        arr: NumPy array (any shape/dtype).
+
+    Returns:
+        Base64-encoded string of array bytes.
+    """
+    buffer = np.ascontiguousarray(arr).tobytes()
+    return base64.b64encode(buffer).decode("utf-8")
+
+
+def decode_ndarray_b64(b64_str: str, shape: tuple, dtype: str) -> np.ndarray:
+    """
+    Decode base64 string back to numpy array.
+
+    Args:
+        b64_str: Base64-encoded string.
+        shape: Target array shape (e.g., (512, 512)).
+        dtype: NumPy data type name (e.g., "uint8").
+
+    Returns:
+        Reconstructed NumPy array.
+    """
+    buffer = base64.b64decode(b64_str.encode("utf-8"))
+    arr = np.frombuffer(buffer, dtype=np.dtype(dtype))
+    return arr.reshape(shape)

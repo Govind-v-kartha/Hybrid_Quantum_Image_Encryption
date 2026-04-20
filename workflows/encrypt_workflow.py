@@ -38,6 +38,7 @@ from engines.decision_engine import divide_roi_into_blocks, get_block_statistics
 from engines.quantum_engine import encrypt_all_blocks
 from engines.classical_engine import encrypt_background
 from engines.fusion_engine import fuse_encrypted_image
+from utils.block_utils import BLOCK_SIZE
 
 logger = setup_logger("ENCRYPT_WORKFLOW", get_config_path())
 
@@ -265,21 +266,32 @@ def run_encryption(
         }
     }
 
-    # Save ROI mask
-    roi_mask_path = os.path.join(metadata_dir, f"{image_basename}_roi_mask.npy")
-    np.save(roi_mask_path, roi_mask)
-    metadata["encryption_metadata"]["roi_information"]["roi_mask_path"] = roi_mask_path
+    # ════════════════════════════════════════════════════════════════════
+    # HYBRID PHASE 3: Embed blocks in metadata (no .npy sidecar files)
+    # ════════════════════════════════════════════════════════════════════
+    from utils.crypto_utils import encode_ndarray_b64
 
-    # Save background mask
-    bg_mask_path = os.path.join(metadata_dir, f"{image_basename}_bg_mask.npy")
-    np.save(bg_mask_path, background_mask)
+    # Embed ROI mask in metadata (no .npy file needed)
+    metadata["encryption_metadata"]["roi_information"]["roi_mask_b64"] = encode_ndarray_b64(roi_mask)
+    metadata["encryption_metadata"]["roi_information"]["roi_mask_shape"] = list(roi_mask.shape)
+    metadata["encryption_metadata"]["roi_information"]["roi_mask_dtype"] = "uint8"
+    logger.info(f"Embedded ROI mask in metadata: shape={roi_mask.shape}")
 
-    # Save encrypted blocks as numpy array for lossless decryption
-    # (avoids re-extracting from fused PNG which may alter pixel values)
-    enc_blocks_path = os.path.join(metadata_dir, f"{image_basename}_encrypted_blocks.npy")
-    enc_blocks_array = np.array(encrypted_blocks, dtype=np.uint8)
-    np.save(enc_blocks_path, enc_blocks_array)
-    metadata["encryption_metadata"]["output_files"]["encrypted_blocks"] = enc_blocks_path
+    # Embed encrypted blocks in metadata (no .npy files)
+    blocks_b64 = []
+    blocks_shapes = []
+    for i, block in enumerate(encrypted_blocks):
+        blocks_b64.append(encode_ndarray_b64(block))
+        blocks_shapes.append(list(block.shape))
+
+    metadata["encryption_metadata"]["output_files"]["encrypted_blocks_b64"] = blocks_b64
+    metadata["encryption_metadata"]["output_files"]["encrypted_blocks_shapes"] = blocks_shapes
+    metadata["encryption_metadata"]["output_files"]["encrypted_blocks_dtype"] = "uint8"
+
+    logger.info(
+        f"Embedded {len(encrypted_blocks)} encrypted blocks in metadata "
+        f"(aligned bbox: all blocks {BLOCK_SIZE}x{BLOCK_SIZE}, no padding, no .npy files)"
+    )
 
 
     # Save metadata

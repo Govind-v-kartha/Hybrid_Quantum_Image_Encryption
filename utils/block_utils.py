@@ -57,7 +57,26 @@ def create_roi_blocks(
     y_max += 1
     x_max += 1
 
+    # ─ HYBRID PHASE 2: Align ROI bbox to 32-pixel block boundaries ─
+    # This prevents edge blocks from being clipped and zero-padded
+    y_min_aligned = (y_min // BLOCK_SIZE) * BLOCK_SIZE
+    x_min_aligned = (x_min // BLOCK_SIZE) * BLOCK_SIZE
+    y_max_aligned = ((y_max + BLOCK_SIZE - 1) // BLOCK_SIZE) * BLOCK_SIZE
+    x_max_aligned = ((x_max + BLOCK_SIZE - 1) // BLOCK_SIZE) * BLOCK_SIZE
+
+    # Clamp to image bounds
+    H, W = image.shape[:2]
+    y_max_aligned = min(y_max_aligned, H)
+    x_max_aligned = min(x_max_aligned, W)
+
+    y_min, x_min, y_max, x_max = y_min_aligned, x_min_aligned, y_max_aligned, x_max_aligned
+
     roi_bbox = np.array([y_min, x_min, y_max, x_max])
+    logger.info(
+        f"ROI bbox aligned to block boundaries: "
+        f"y=[{y_min},{y_max}] ({(y_max-y_min)//BLOCK_SIZE} blocks), "
+        f"x=[{x_min},{x_max}] ({(x_max-x_min)//BLOCK_SIZE} blocks)"
+    )
     roi_region = image[y_min:y_max, x_min:x_max].copy()
     roi_h, roi_w = roi_region.shape[:2]
 
