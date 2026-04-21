@@ -38,6 +38,55 @@ from engines.verification_engine import verify_zero_data_loss, generate_verifica
 logger = setup_logger("DECRYPT_WORKFLOW", get_config_path())
 
 
+def _build_signature_path(metadata_path: str) -> str:
+    """Build the canonical metadata signature path for a metadata file."""
+    metadata_dir = os.path.dirname(metadata_path)
+    metadata_basename = os.path.splitext(os.path.basename(metadata_path))[0]
+    return os.path.join(metadata_dir, f"{metadata_basename}_bundle.sig")
+
+
+def _enforce_signature_gate(metadata_path: str, config: dict) -> bool:
+    """Enforce signature verification policy before allowing decryption."""
+    security_policy = config.get("security_policy", {})
+    require_signature = security_policy.get("require_metadata_signature", True)
+    allow_unsigned = security_policy.get("allow_unsigned_decryption", False)
+
+    sig_path = _build_signature_path(metadata_path)
+
+    if not os.path.exists(sig_path):
+        if require_signature and not allow_unsigned:
+            raise RuntimeError(
+                f"SECURITY GATE FAILED: Signature required by policy but file is missing: {sig_path}"
+            )
+        logger.warning(
+            f"⚠️  Signature file not found: {sig_path} - Unsigned decryption allowed by explicit policy override"
+        )
+        return False
+
+    sender_public_key_path = config.get("metadata_signature", {}).get("sender_public_key_path")
+    if not sender_public_key_path or not os.path.exists(sender_public_key_path):
+        if require_signature and not allow_unsigned:
+            raise RuntimeError(
+                "SECURITY GATE FAILED: Signature required by policy but sender public key is missing"
+            )
+        logger.warning(
+            "⚠️  Sender public key missing - Signature verification skipped by explicit unsigned policy override"
+        )
+        return False
+
+    try:
+        sender_public_key = load_dilithium_public_key(sender_public_key_path)
+        signature_hex = load_signature_file(sig_path)
+        is_valid = verify_bundle(metadata_path, signature_hex, sender_public_key)
+        if not is_valid:
+            raise RuntimeError("❌ SECURITY BREACH: Metadata signature verification FAILED - Bundle may be tampered!")
+    except Exception as e:
+        raise RuntimeError(f"SECURITY GATE FAILED: Metadata verification failed: {e}")
+
+    logger.info("✅ SECURITY GATE PASSED: Metadata bundle signature verified (ML-DSA Dilithium3)")
+    return True
+
+
 def run_decryption(
     metadata_path: str,
     output_dir: str = None,
@@ -80,36 +129,7 @@ def run_decryption(
     # SIGNATURE VERIFICATION (SECURITY GATE - Before Any Decryption)
     # ════════════════════════════════════════════════════════════════════
     logger.info("\n>>> SECURITY GATE: Verifying metadata bundle signature (ML-DSA/Dilithium3)...")
-    
-    # Construct expected .sig file path
-    metadata_dir = os.path.dirname(metadata_path)
-    metadata_basename = os.path.splitext(os.path.basename(metadata_path))[0]
-    sig_path = os.path.join(metadata_dir, f"{metadata_basename}_bundle.sig")
-    
-    signature_verified = False
-    if os.path.exists(sig_path):
-        try:
-            # Load sender's public key from config
-            sender_public_key_path = config.get("metadata_signature", {}).get("sender_public_key_path")
-            if sender_public_key_path and os.path.exists(sender_public_key_path):
-                sender_public_key = load_dilithium_public_key(sender_public_key_path)
-                signature_hex = load_signature_file(sig_path)
-                
-                # Verify bundle
-                is_valid = verify_bundle(metadata_path, signature_hex, sender_public_key)
-                
-                if not is_valid:
-                    raise RuntimeError("❌ SECURITY BREACH: Metadata signature verification FAILED - Bundle may be tampered!")
-                
-                signature_verified = True
-                logger.info("✅ SECURITY GATE PASSED: Metadata bundle signature verified (ML-DSA Dilithium3)")
-            else:
-                logger.warning("⚠️  Sender public key not configured. Skipping signature verification (INSECURE)")
-        except Exception as e:
-            logger.error(f"❌ SECURITY GATE FAILED: {e}")
-            raise RuntimeError(f"Metadata verification failed - Cannot proceed with decryption: {e}")
-    else:
-        logger.warning(f"⚠️  Signature file not found: {sig_path} - Proceeding without verification (INSECURE)")
+    _enforce_signature_gate(metadata_path, config)
 
     # ─────────────────────────────────────────────────────────────────
     # STEP 1: Load Metadata and Encrypted Data

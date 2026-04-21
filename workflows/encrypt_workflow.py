@@ -56,6 +56,13 @@ from utils.block_utils import BLOCK_SIZE
 logger = setup_logger("ENCRYPT_WORKFLOW", get_config_path())
 
 
+def _build_signature_path(metadata_path: str) -> str:
+    """Build the canonical metadata signature path for a metadata file."""
+    metadata_dir = os.path.dirname(metadata_path)
+    metadata_basename = os.path.splitext(os.path.basename(metadata_path))[0]
+    return os.path.join(metadata_dir, f"{metadata_basename}_bundle.sig")
+
+
 def run_encryption(
     image_path: str,
     output_dir: str = None,
@@ -458,7 +465,7 @@ def run_encryption(
             signature_hex = sign_bundle(metadata_path, sender_private_key)
             
             # Save signature to .sig file
-            sig_path = os.path.join(metadata_dir, f"{image_basename}_bundle.sig")
+            sig_path = _build_signature_path(metadata_path)
             save_signature_file(signature_hex, sig_path)
             
             # Store signature hash in metadata for reference
