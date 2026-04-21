@@ -675,22 +675,22 @@ The following three steps are **mutually exclusive** — only ONE executes based
 
 ### Security Layers
 
-The system implements **THREE security gates** for decryption:
+The decryption path applies one mandatory verification gate and one **mutually-exclusive key-recovery branch order**:
 
-1. **GATE 1: Metadata Signature Verification** (BEFORE anything)
+1. **GATE 1: Metadata Signature Verification** (BEFORE key recovery)
    - Verifies `st2_bundle.sig` with Dilithium3
    - Fails → ABORT (metadata tampered)
-   - Passes → Continue to GATE 2
+   - Passes → Enter key-recovery branch selection
 
-2. **GATE 2: Protected Keys Decryption** (Scrypt + AES-256-GCM)
-   - If `st2_keys.enc` exists → Decrypt with passphrase
-   - Fails → ABORT (wrong passphrase or corrupted)
-   - Passes → Continue to GATE 3
+2. **Key-Recovery Branch Order (first matching branch is used)**
+   - **Branch A: `post_quantum` present** → ML-KEM/Kyber768 decapsulation
+     - Fails → ABORT (key material corrupted or wrong recipient)
+   - **Branch B: else if `key_protection` present** → Scrypt + AES-256-GCM protected-key decryption
+     - Fails → ABORT (wrong passphrase or protected blob corrupted)
+   - **Branch C: else legacy plaintext fallback** → allowed only when `security_policy.allow_legacy_plaintext_keys = true`
+     - If policy is `false` (default) → ABORT (legacy plaintext key loading blocked)
 
-3. **GATE 3: Post-Quantum Key Recovery** (ML-KEM/Kyber768)
-   - If `post_quantum` metadata exists → Decapsulate with private key
-   - Fails → ABORT (key corrupted or wrong recipient)
-   - Passes → Proceed to decryption
+No branch chaining occurs: the implementation evaluates branches in this order and executes exactly one branch.
 
 ### Why All Files are Critical
 
@@ -1463,7 +1463,7 @@ KEY RECOVERY BRANCH: ⚡ FIX #1, FIX #3 (MUTUALLY EXCLUSIVE PATHS)
   │   └─ STEP 0.5: Decrypt Protected Keys ⚡ FIX #3 (Scrypt + AES-256-GCM decrypt)
   │
   └─ ELSE (neither exists - v1.0 legacy):
-      └─ STEP 0 (Fallback): Load Plaintext Keys ⚠️ DEPRECATED (with CRITICAL warnings)
+      └─ STEP 0 (Fallback): Load Plaintext Keys ⚠️ DEPRECATED (allowed only if `security_policy.allow_legacy_plaintext_keys=true`; default policy blocks and aborts)
   ↓
 STEP 1-3: Load Metadata & Blocks
   ↓
