@@ -45,8 +45,10 @@ def encrypt_background(
     logger.info("STARTING CLASSICAL ENCRYPTION OF BACKGROUND")
     logger.info("=" * 60)
 
-    assert len(aes_key) == 32, f"AES key must be 32 bytes (256 bits), got {len(aes_key)}"
-    assert len(nonce) == 12, f"Nonce must be 12 bytes (96 bits), got {len(nonce)}"
+    if len(aes_key) != 32:
+        raise ValueError(f"AES key must be 32 bytes (256 bits), got {len(aes_key)}")
+    if len(nonce) != 12:
+        raise ValueError(f"Nonce must be 12 bytes (96 bits), got {len(nonce)}")
 
     # Extract background image (zero out ROI)
     background_image = image.copy()
@@ -118,8 +120,10 @@ def decrypt_background(
     logger.info("STARTING CLASSICAL DECRYPTION OF BACKGROUND")
     logger.info("=" * 60)
 
-    assert len(aes_key) == 32, f"AES key must be 32 bytes, got {len(aes_key)}"
-    assert len(nonce) == 12, f"Nonce must be 12 bytes, got {len(nonce)}"
+    if len(aes_key) != 32:
+        raise ValueError(f"AES key must be 32 bytes, got {len(aes_key)}")
+    if len(nonce) != 12:
+        raise ValueError(f"Nonce must be 12 bytes, got {len(nonce)}")
 
     # Reconstruct ciphertext + tag for AESGCM
     ciphertext_with_tag = ciphertext + tag
