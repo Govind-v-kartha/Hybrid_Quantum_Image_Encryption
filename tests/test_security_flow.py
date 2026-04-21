@@ -231,3 +231,109 @@ def test_encryption_fails_closed_when_no_key_recovery_path_exists(tmp_path, monk
 
     with pytest.raises(RuntimeError, match="no valid key recovery path available"):
         encrypt_workflow.run_encryption(str(tmp_path / "dummy.png"), config=config)
+
+
+def _write_minimal_decryption_metadata(tmp_path, *, encrypted_background_path, enc_file_hash):
+    roi_mask = np.array([[1, 0], [0, 1]], dtype=np.uint8)
+    roi_mask_path = tmp_path / "roi_mask.npy"
+    np.save(roi_mask_path, roi_mask)
+
+    metadata = {
+        "encryption_metadata": {
+            "original_image": {"size": [2, 2], "channels": 3, "filename": "orig.png"},
+            "block_map": [],
+            "roi_information": {
+                "roi_bbox": [0, 0, 2, 2],
+                "roi_mask_path": str(roi_mask_path),
+            },
+            "block_encryption_info": [],
+            "output_files": {
+                "keys": str(tmp_path / "legacy_keys.json"),
+                "encrypted_background": str(encrypted_background_path),
+                "encrypted_image": str(tmp_path / "encrypted.png"),
+            },
+            "classical_encryption": {
+                "nonce": "AAAAAAAAAAAAAAAA",
+                "tag": "AAAAAAAAAAAAAAAAAAAAAA==",
+                "image_shape": [2, 2, 3],
+                "enc_file_hash": enc_file_hash,
+            },
+        }
+    }
+
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    return metadata_path
+
+
+def _build_unsigned_legacy_decrypt_config(tmp_path):
+    return {
+        "paths": {"output_dir": str(tmp_path / "out")},
+        "security_policy": {
+            "require_metadata_signature": False,
+            "allow_unsigned_decryption": True,
+            "allow_legacy_plaintext_keys": True,
+        },
+        "metadata_signature": {},
+    }
+
+
+def test_signature_gate_rejects_tampered_metadata_after_signing(tmp_path, monkeypatch):
+    metadata_path = tmp_path / "sample_metadata.json"
+    metadata_path.write_text(json.dumps({"encryption_metadata": {"version": "1.0"}}), encoding="utf-8")
+
+    sig_path = build_decrypt_signature_path(str(metadata_path))
+    sig_path = str(sig_path)
+    with open(sig_path, "w", encoding="utf-8") as f:
+        f.write("deadbeef")
+
+    sender_public_key_path = tmp_path / "sender_dilithium3_public.key"
+    sender_public_key_path.write_bytes(b"dummy-public-key")
+
+    monkeypatch.setattr(decrypt_workflow, "load_dilithium_public_key", lambda _: b"public-key")
+    monkeypatch.setattr(decrypt_workflow, "verify_bundle", lambda *_: False)
+
+    config = {
+        "security_policy": {
+            "require_metadata_signature": True,
+            "allow_unsigned_decryption": False,
+        },
+        "metadata_signature": {
+            "sender_public_key_path": str(sender_public_key_path),
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="Metadata verification failed"):
+        _enforce_signature_gate(str(metadata_path), config)
+
+
+def test_decryption_rejects_when_encrypted_background_file_missing(tmp_path, monkeypatch):
+    missing_background = tmp_path / "st2_background.enc"
+    metadata_path = _write_minimal_decryption_metadata(
+        tmp_path,
+        encrypted_background_path=missing_background,
+        enc_file_hash=hashlib.sha256(b"expected").hexdigest(),
+    )
+
+    config = _build_unsigned_legacy_decrypt_config(tmp_path)
+    monkeypatch.setattr(decrypt_workflow, "load_key_material", lambda *_: (b"m" * 32, b"k" * 32, b"s" * 16))
+
+    with pytest.raises(FileNotFoundError, match=r"st2_background\.enc"):
+        decrypt_workflow.run_decryption(str(metadata_path), config=config)
+
+
+def test_decryption_rejects_when_encrypted_background_hash_mismatch(tmp_path, monkeypatch):
+    background_path = tmp_path / "st2_background.enc"
+    background_path.write_bytes(b"actual-ciphertext")
+
+    metadata_path = _write_minimal_decryption_metadata(
+        tmp_path,
+        encrypted_background_path=background_path,
+        enc_file_hash=hashlib.sha256(b"different-ciphertext").hexdigest(),
+    )
+
+    config = _build_unsigned_legacy_decrypt_config(tmp_path)
+    monkeypatch.setattr(decrypt_workflow, "load_key_material", lambda *_: (b"m" * 32, b"k" * 32, b"s" * 16))
+
+    with pytest.raises(RuntimeError, match="integrity check failed"):
+        decrypt_workflow.run_decryption(str(metadata_path), config=config)
