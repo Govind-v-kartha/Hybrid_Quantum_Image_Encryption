@@ -13,6 +13,9 @@ build/
 venv/
 env/
 
+# Local git worktrees
+.worktrees/
+
 # Output files (generated at runtime)
 output/encrypted/
 output/decrypted/
