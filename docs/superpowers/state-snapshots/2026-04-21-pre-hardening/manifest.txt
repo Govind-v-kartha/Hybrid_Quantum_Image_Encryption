@@ -1,0 +1,11 @@
+Snapshot: 2026-04-21-pre-hardening
+Source root: C:/Users/acer/OneDrive/Desktop/Final project/Hybrid_Quantum_Image_Encryption/.worktrees/security-hardening
+Files:
+- classical_engine.py
+- config.json
+- crypto_utils.py
+- decrypt_workflow.py
+- encrypt_workflow.py
+- quantum_engine.py
+- checksums.sha256
+- manifest.txt

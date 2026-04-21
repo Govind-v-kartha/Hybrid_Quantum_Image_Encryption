@@ -68,16 +68,10 @@
         "sender_public_key_path": "keys/sender_dilithium3_public.key",
         "description": "ML-DSA (NIST FIPS 204) for metadata bundle signing. Ensures metadata integrity and sender authenticity. Sender uses private key to sign, receiver uses public key to verify before decryption."
     },
-    "security_policy": {
-        "require_metadata_signature": true,
-        "allow_unsigned_decryption": false,
-        "allow_legacy_plaintext_keys": false,
-        "allow_plaintext_key_export": false
-    },
     "key_protection": {
         "enabled": true,
         "algorithm": "Scrypt + AES-256-GCM",
-        "passphrase": null,
+        "passphrase": "change-this-passphrase-in-production",
         "scrypt_params": {
             "n": 16384,
             "r": 8,
