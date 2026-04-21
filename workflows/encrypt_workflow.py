@@ -419,11 +419,7 @@ def run_encryption(
     )
 
 
-    # Save metadata
     metadata_path = os.path.join(metadata_dir, f"{image_basename}_metadata.json")
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2, default=str)
-    logger.info(f"Metadata saved: {metadata_path}")
 
     # ════════════════════════════════════════════════════════════════════
     # STEP 9: Post-Quantum Key Encapsulation (ML-KEM/Kyber768)
@@ -467,18 +463,7 @@ def run_encryption(
             # Save signature to .sig file
             sig_path = _build_signature_path(metadata_path)
             save_signature_file(signature_hex, sig_path)
-            
-            # Store signature hash in metadata for reference
-            metadata["encryption_metadata"]["bundle_signature"] = {
-                "algorithm": "Dilithium3 (ML-DSA NIST-approved)",
-                "signature_file": sig_path,
-                "signature_hash": __import__("hashlib").sha256(bytes.fromhex(signature_hex)).hexdigest()[:16] + "..."
-            }
-            
-            # Update metadata with signature info
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2, default=str)
-            
+
             logger.info("✅ Metadata bundle signed with ML-DSA (Dilithium3) - Integrity & Authenticity verified")
             sig_file = sig_path
         except Exception as e:
