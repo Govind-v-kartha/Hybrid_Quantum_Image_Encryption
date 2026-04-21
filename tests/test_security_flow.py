@@ -215,3 +215,19 @@ def test_legacy_plaintext_branch_denied_by_default_policy(tmp_path):
 
     with pytest.raises(RuntimeError, match="Legacy plaintext key fallback is disabled"):
         decrypt_workflow.run_decryption(str(metadata_path), config=config)
+
+
+def test_encryption_fails_closed_when_no_key_recovery_path_exists(tmp_path, monkeypatch):
+    _patch_encrypt_pipeline_for_metadata_tests(monkeypatch, tmp_path)
+
+    config = {
+        "paths": {"output_dir": str(tmp_path / "out")},
+        "quantum_encryption": {"shots": 8},
+        "security_policy": {"allow_plaintext_key_export": False},
+        "key_protection": {},
+        "post_quantum": {},
+        "metadata_signature": {},
+    }
+
+    with pytest.raises(RuntimeError, match="no valid key recovery path available"):
+        encrypt_workflow.run_encryption(str(tmp_path / "dummy.png"), config=config)

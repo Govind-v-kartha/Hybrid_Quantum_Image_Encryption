@@ -487,6 +487,33 @@ def run_encryption(
         sig_file = None
 
     # ─────────────────────────────────────────────────────────────────
+    # FAIL-CLOSED KEY RECOVERY INVARIANT
+    # ─────────────────────────────────────────────────────────────────
+    post_quantum_metadata = metadata["encryption_metadata"].get("post_quantum")
+    has_post_quantum_recovery = (
+        isinstance(post_quantum_metadata, dict)
+        and all(post_quantum_metadata.get(field) for field in ("kem_ciphertext", "wrapped_seed", "wrap_nonce"))
+        and os.path.exists(key_path)
+    )
+    has_key_protection_recovery = (
+        bool(key_protection_metadata)
+        and key_protection_metadata.get("enabled") is True
+        and bool(protected_key_file)
+        and os.path.exists(protected_key_file)
+    )
+    has_plaintext_key_recovery = allow_plaintext_key_export and os.path.exists(key_path)
+
+    if not (
+        has_post_quantum_recovery
+        or has_key_protection_recovery
+        or has_plaintext_key_recovery
+    ):
+        raise RuntimeError(
+            "Encryption aborted: no valid key recovery path available. "
+            "Enable plaintext key export or configure key protection / post-quantum key wrapping."
+        )
+
+    # ─────────────────────────────────────────────────────────────────
     # COMPLETE
     # ─────────────────────────────────────────────────────────────────
     total_time = time.time() - total_start
