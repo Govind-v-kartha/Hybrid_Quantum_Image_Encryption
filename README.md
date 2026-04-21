@@ -80,6 +80,15 @@ python main.py --mode verify --original input/satellite.png --decrypted output/d
 | **analyze** | `python main.py --mode analyze` | ROI analysis only (no encryption) |
 | **verify** | `python main.py --mode verify` | Compare original vs decrypted |
 
+## Security Policy Defaults
+
+Default decryption behavior is fail-closed and policy-gated (`config/config.json`):
+- `security_policy.require_metadata_signature = true` (metadata signature verification is required)
+- `security_policy.allow_unsigned_decryption = false` (unsigned decryption is disabled)
+- `security_policy.allow_legacy_plaintext_keys = false` (legacy plaintext key loading is disabled)
+
+Unsigned decryption and legacy plaintext key loading are available only through explicit policy overrides and should be treated as insecure compatibility modes.
+
 ## Project Structure
 
 ```

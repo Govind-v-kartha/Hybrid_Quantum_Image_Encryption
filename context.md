@@ -155,3 +155,13 @@ For a 32×32 pixel channel:
 | `quantum_encryption.backend` | AerSimulator | Qiskit Aer local simulator |
 | `quantum_encryption.encoding` | NEQR | Novel Enhanced Quantum Representation |
 | `classical_encryption.algorithm` | AES-256-GCM | Authenticated encryption for background |
+
+### Security Policy Defaults (Fail-Closed)
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `security_policy.require_metadata_signature` | `true` | Decryption requires a verifiable metadata signature. |
+| `security_policy.allow_unsigned_decryption` | `false` | Unsigned decryption is blocked unless explicitly overridden. |
+| `security_policy.allow_legacy_plaintext_keys` | `false` | Legacy plaintext key fallback is blocked unless explicitly overridden. |
+
+This means the legacy plaintext key path exists for compatibility with old bundles but is disabled by default.

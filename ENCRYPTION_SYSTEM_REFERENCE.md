@@ -8,6 +8,15 @@ This is a **dual-layer encryption system** for satellite images that combines:
 - **Classical AES-256-GCM encryption** for background pixels
 - **Post-Quantum Cryptography** for secure key transport and digital signatures
 
+### Security Policy Defaults (Current)
+
+Runtime policy defaults in `config/config.json` are fail-closed:
+- `security_policy.require_metadata_signature = true`
+- `security_policy.allow_unsigned_decryption = false`
+- `security_policy.allow_legacy_plaintext_keys = false`
+
+This means signature verification is required by default, unsigned decryption is disabled by default, and legacy plaintext key loading is disabled by default. Compatibility fallbacks exist only when those policies are explicitly overridden.
+
 ### ⚡ Six Security Fixes Implemented
 
 This system includes **six critical security enhancements** to address key vulnerabilities:
@@ -558,7 +567,7 @@ The following three steps are **mutually exclusive** — only ONE executes based
 ---
 
 #### **BRANCH 3: STEP 0 (Fallback) - Load Plaintext Keys (v1.0 Legacy - DEPRECATED)**
-**Executes ELSE (neither `post_quantum` nor `key_protection` sections exist)**
+**Available only when `security_policy.allow_legacy_plaintext_keys = true` and neither `post_quantum` nor `key_protection` sections exist**
 
 - **Status**: ⚠️ **DEPRECATED** - This is a v1.0 legacy encrypted image
 - Check metadata: `else (neither post_quantum nor key_protection exist)`
@@ -570,8 +579,8 @@ The following three steps are **mutually exclusive** — only ONE executes based
   - "This indicates an old encryption (v1.0 legacy format)."
   - "Keys are NOT protected at rest and are VULNERABLE to theft."
   - "STRONGLY recommend: Re-encrypt this image with FIX #3 protection immediately"
-- **SECURITY NOTE**: Modern implementations may choose to **REFUSE** loading plaintext keys and abort decryption
-- **Result**: Master seed recovered from plaintext (with security warnings)
+- **SECURITY NOTE**: Current default policy **REFUSES** plaintext key loading and aborts decryption unless `security_policy.allow_legacy_plaintext_keys=true` is explicitly configured.
+- **Result**: Master seed is recovered from plaintext only when that insecure compatibility override is enabled.
 
 #### **STEP 1: Load Metadata & Keys**
 - Load `st2_metadata.json`
@@ -1374,7 +1383,8 @@ This table shows all 6 security fixes, their threat models, implementations, and
 4. **KEY RECOVERY BRANCH** (Mutually exclusive): ⚡ FIX #1, FIX #3
    - IF post_quantum exists → STEP 0: ML-KEM decapsulation
    - ELSE IF key_protection exists → STEP 0.5: Scrypt + AES-GCM decryption
-   - ELSE → STEP 0 (Fallback): Load plaintext keys (with CRITICAL warnings)
+   - ELSE IF `security_policy.allow_legacy_plaintext_keys=true` → STEP 0 (Fallback): Load plaintext keys with critical warnings
+   - ELSE → abort decryption due to policy violation (default behavior)
 
 ---
 
