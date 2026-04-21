@@ -206,8 +206,14 @@ def run_encryption(
 
     # Save key material (without ML-KEM wrapping yet - added in STEP 9)
     key_path = os.path.join(metadata_dir, f"{image_basename}_keys.json")
-    save_key_material(master_seed, aes_key, salt, key_path)
-    logger.info(f"Keys generated (temporary): {key_path}")
+    security_policy = config.get("security_policy", {})
+    allow_plaintext_key_export = security_policy.get("allow_plaintext_key_export", False)
+
+    if allow_plaintext_key_export:
+        save_key_material(master_seed, aes_key, salt, key_path)
+        logger.info(f"Keys generated (temporary): {key_path}")
+    else:
+        logger.info("Plaintext key export disabled by policy; skipping save_key_material")
     
     # ════════════════════════════════════════════════════════════════════
     # STEP 4.5: Protect Keys at Rest (Scrypt + AES-256-GCM) 🔐 NEW
@@ -215,6 +221,7 @@ def run_encryption(
     logger.info("\n>>> STEP 4.5: Protecting keys at rest (Scrypt + AES-256-GCM)...")
     
     key_passphrase = config.get("key_protection", {}).get("passphrase")
+    key_protection_metadata = None
     if key_passphrase:
         try:
             keys_dict = {
@@ -226,9 +233,9 @@ def run_encryption(
             protected_key_path = os.path.join(metadata_dir, f"{image_basename}_keys.enc")
             save_protected_keys(keys_dict, key_passphrase, protected_key_path)
             
-            # Store encryption protection metadata
+            # Store key protection metadata for final encryption metadata
             # ⚠️ SECURITY: Never store the KEK itself - only algorithm parameters
-            metadata_temp = {"key_protection": {
+            key_protection_metadata = {
                 "enabled": True,
                 "method": "Scrypt + AES-256-GCM",
                 "protected_keys_file": protected_key_path,
@@ -243,8 +250,8 @@ def run_encryption(
                     "nonce_length": 12,
                     "tag_length": 16
                 }
-            }}
-            
+            }
+
             logger.info("✅ Keys protected at rest: Scrypt + AES-256-GCM")
             protected_key_file = protected_key_path
         except Exception as e:
@@ -383,13 +390,19 @@ def run_encryption(
             },
             "block_encryption_info": all_encryption_info,
             "classical_encryption": classical_enc_info,
+            "salt_b64": encode_bytes_b64(salt),
             "output_files": {
                 "encrypted_image": fused_path,
                 "encrypted_background": bg_cipher_path,
-                "keys": key_path,
             },
         }
     }
+
+    if allow_plaintext_key_export:
+        metadata["encryption_metadata"]["output_files"]["keys"] = key_path
+
+    if key_protection_metadata:
+        metadata["encryption_metadata"]["key_protection"] = key_protection_metadata
 
     # ════════════════════════════════════════════════════════════════════
     # HYBRID PHASE 3: Embed blocks in metadata (no .npy sidecar files)

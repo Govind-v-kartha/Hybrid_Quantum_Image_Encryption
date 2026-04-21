@@ -151,9 +151,10 @@ def run_decryption(
     roi_bbox = np.array(enc_meta["roi_information"]["roi_bbox"])
     all_encryption_info = enc_meta["block_encryption_info"]
 
-    # Load keys
-    key_path = enc_meta["output_files"]["keys"]
-    
+    # Load keys (legacy plaintext fallback only)
+    key_path = enc_meta.get("output_files", {}).get("keys")
+    security_policy = config.get("security_policy", {})
+
     # ════════════════════════════════════════════════════════════════════
     # KEY RECOVERY BRANCH: Mutually exclusive paths
     # Three possible scenarios based on what's in metadata:
@@ -190,10 +191,13 @@ def run_decryption(
             )
             logger.info("✅ Master seed recovered from ML-KEM (Kyber768) - Zero knowledge key transport")
             
-            # Derive remaining keys from master_seed
+            # Derive remaining keys from master_seed using deterministic metadata source
             from utils.crypto_utils import derive_aes_key
-            salt = decode_bytes_b64(enc_meta.get("salt_b64", ""))  # May be stored in metadata
-            aes_key = derive_aes_key(master_seed, salt) if salt else None
+            salt_b64 = enc_meta.get("salt_b64")
+            if not salt_b64:
+                raise ValueError("Missing required encryption_metadata.salt_b64 for post-quantum key derivation")
+            salt = decode_bytes_b64(salt_b64)
+            aes_key = derive_aes_key(master_seed, salt)
         except Exception as e:
             logger.error(f"❌ ML-KEM key recovery failed: {e}")
             raise RuntimeError(f"Post-quantum key recovery failed: {e}")
@@ -232,14 +236,23 @@ def run_decryption(
     # BRANCH 3: STEP 0 (Fallback) - Plaintext Keys v1.0 Legacy (Deprecated)
     # ───────────────────────────────────────────────────────────────────
     else:
+        allow_legacy_plaintext = security_policy.get("allow_legacy_plaintext_keys", False)
+        if not allow_legacy_plaintext:
+            raise RuntimeError(
+                "SECURITY POLICY VIOLATION: Legacy plaintext key fallback is disabled. "
+                "Set security_policy.allow_legacy_plaintext_keys=true to permit insecure legacy decryptions."
+            )
+
+        if not key_path:
+            raise RuntimeError("Legacy plaintext key path is missing from metadata output_files.keys")
+
         logger.info("\n>>> STEP 0 (Fallback): Loading plaintext keys (v1.0 legacy format - DEPRECATED)...")
         logger.critical("🚨 CRITICAL SECURITY WARNING 🚨")
         logger.critical("    Raw key material found in PLAINTEXT on disk!")
         logger.critical("    This indicates an old encryption (v1.0 legacy format).")
         logger.critical("    Keys are NOT protected at rest and are VULNERABLE to theft.")
-        logger.critical("    Proceeding with decryption, but STRONGLY recommend:")
-        logger.critical("    1. Re-encrypt this image with modern protection (FIX #3: Scrypt + AES-256-GCM)")
-        logger.critical("    2. Update to latest encryption version immediately")
+        logger.critical("    Proceeding with decryption only because policy explicitly allows legacy plaintext keys.")
+        logger.critical("    STRONGLY recommend: re-encrypt this image with modern key protection immediately.")
         logger.critical("🚨 END WARNING 🚨\n")
         master_seed, aes_key, salt = load_key_material(key_path)
 
