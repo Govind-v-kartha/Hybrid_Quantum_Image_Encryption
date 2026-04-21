@@ -25,6 +25,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid valu
 
 from utils.logger import setup_logger, get_config_path, load_config
 from utils.image_utils import rgb_to_grayscale
+from utils.block_utils import BLOCK_SIZE
 
 logger = setup_logger("QUANTUM_ENGINE", get_config_path())
 
@@ -498,7 +499,7 @@ def _encrypt_blocks_parallel(
                                 break
                             logger.error(f"Block {bid} encrypt error: {e}")
                             failed += 1
-                            encrypted_blocks[bid] = np.zeros((8, 8), dtype=np.uint8)
+                            encrypted_blocks[bid] = np.zeros((BLOCK_SIZE, BLOCK_SIZE, 3), dtype=np.uint8)
                             all_encryption_info[bid] = {"block_id": bid, "error": err_msg}
                         completed += 1
 
@@ -602,7 +603,7 @@ def _decrypt_blocks_parallel(
                                 pool_broken = True
                                 break
                             logger.error(f"Block {bid} decrypt error: {e}")
-                            decrypted_blocks[bid] = np.zeros((8, 8), dtype=np.uint8)
+                            decrypted_blocks[bid] = np.zeros((BLOCK_SIZE, BLOCK_SIZE, 3), dtype=np.uint8)
                         completed += 1
 
                         if completed % log_interval == 0 or completed == total_blocks:
