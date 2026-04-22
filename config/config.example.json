@@ -1,0 +1,83 @@
+{
+    "project": {
+        "name": "Hybrid AI-Quantum Satellite Image Encryption System",
+        "version": "1.0.0"
+    },
+    "paths": {
+        "input_dir": "input",
+        "output_dir": "output",
+        "encrypted_dir": "output/encrypted",
+        "decrypted_dir": "output/decrypted",
+        "analysis_dir": "output/analysis",
+        "metadata_dir": "output/metadata",
+        "logs_dir": "logs"
+    },
+    "repos": {
+        "fleximo": {
+            "path": "repos/fleximo_repo",
+            "model_weights": "DOFA_ViT_base_e100.pth",
+            "weights_url": "https://huggingface.co/earthflow/DOFA/resolve/main/DOFA_ViT_base_e100.pth"
+        },
+        "quantum": {
+            "path": "repos/quantum_repo"
+        }
+    },
+    "segmentation": {
+        "model_type": "vit_base",
+        "img_size": 256,
+        "resize": 16,
+        "num_classes": 2,
+        "wavelengths_rgb": [0.665, 0.56, 0.49],
+        "roi_threshold": 0.5,
+        "batch_size": 1
+    },
+    "quantum_encryption": {
+        "block_size": 32,
+        "shots": 16384,
+        "backend": "AerSimulator",
+        "encoding": "NEQR"
+    },
+    "classical_encryption": {
+        "algorithm": "AES-256-GCM",
+        "key_size": 32,
+        "nonce_size": 12
+    },
+    "image": {
+        "supported_formats": ["png", "jpg", "jpeg", "tiff", "tif"],
+        "color_space": "RGB",
+        "channels": 3
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+        "date_format": "%Y-%m-%d %H:%M:%S",
+        "log_to_file": true,
+        "log_filename": "encryption_system.log"
+    },
+    "post_quantum": {
+        "enabled": true,
+        "algorithm": "Kyber768",
+        "recipient_public_key_path": "keys/recipient_kyber768_public.key",
+        "recipient_private_key_path": "${RECIPIENT_PRIVATE_KEY_PATH}",
+        "description": "ML-KEM (NIST FIPS 203) for post-quantum key encapsulation. Set RECIPIENT_PRIVATE_KEY_PATH env var. Public key path is static (safe to commit)."
+    },
+    "metadata_signature": {
+        "enabled": true,
+        "algorithm": "Dilithium3",
+        "sender_private_key_path": "${SENDER_PRIVATE_KEY_PATH}",
+        "sender_public_key_path": "keys/sender_dilithium3_public.key",
+        "description": "ML-DSA (NIST FIPS 204) for metadata bundle signing. Set SENDER_PRIVATE_KEY_PATH env var. Public key path is static (safe to commit)."
+    },
+    "key_protection": {
+        "enabled": true,
+        "algorithm": "Scrypt + AES-256-GCM",
+        "passphrase": "${ENCRYPTION_PASSPHRASE}",
+        "scrypt_params": {
+            "n": 16384,
+            "r": 8,
+            "p": 1,
+            "description": "n=2^14 (memory cost), r=8 (block size), p=1 (parallelization)"
+        },
+        "description": "⚠️  CRITICAL: Set ENCRYPTION_PASSPHRASE env var. NEVER put real passphrase in config file. Keys are encrypted with Scrypt-derived KEK + AES-256-GCM."
+    }
+}
