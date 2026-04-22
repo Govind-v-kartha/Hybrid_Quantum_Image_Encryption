@@ -1,4 +1,35 @@
+# ============================================================================
+# SECURITY: Sensitive Files (NEVER COMMIT)
+# ============================================================================
+
+# Configuration with secrets (use config.example.json as template)
+config/config.json              # Instance config (has passphrases, key paths)
+.env                            # Environment variables
+.env.local                       # Local overrides
+.env.*.local                     # Environment-specific
+
+# Cryptographic keys (CRITICAL - never expose)
+keys/                           # All private/public keys
+*.key                           # Any key file
+*.pem                           # PEM format keys
+*.enc                           # Encrypted files (keys, backups)
+
+# Encrypted data (generated at runtime)
+output/                         # All encrypted images, metadata
+*.enc
+
+# Model weights (large, regenerate as needed)
+DOFA_ViT_base_e100.pth
+
+# Logs (may contain sensitive info)
+logs/
+*.log
+full_run.log
+
+# ============================================================================
 # Python
+# ============================================================================
+
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,27 +44,24 @@ build/
 venv/
 env/
 
-# Output files (generated at runtime)
-output/encrypted/
-output/decrypted/
-output/metadata/
-output/analysis/
+# ============================================================================
+# IDE & Development
+# ============================================================================
 
-# Logs
-logs/
-*.log
-full_run.log
-
-# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
+*~
 
 # Jupyter
 .ipynb_checkpoints/
+
+# ============================================================================
+# OS Specific
+# ============================================================================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+.gvfs
