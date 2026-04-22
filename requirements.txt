@@ -23,6 +23,9 @@ scikit-image>=0.20.0
 # Cryptography
 cryptography>=41.0.0
 
+# Environment configuration
+python-dotenv>=1.0.0
+
 # Visualization
 matplotlib>=3.7.0
 
