@@ -15,7 +15,8 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from utils.logger import setup_logger, get_config_path, load_config
+from utils.logger import setup_logger, get_config_path
+from utils.config_loader_secure import load_config_secure
 
 logger = setup_logger("AI_ENGINE", get_config_path())
 
@@ -243,7 +244,7 @@ def segment_image_fleximo(
             - saliency_map: Normalised saliency map (H, W) float32.
     """
     if config is None:
-        config = load_config()
+        config = load_config_secure()
 
     # Get paths from config
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

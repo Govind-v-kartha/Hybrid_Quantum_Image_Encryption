@@ -23,7 +23,8 @@ import multiprocessing
 # Suppress Henon map NaN/Inf cast warnings — expected for chaotic maps
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value")
 
-from utils.logger import setup_logger, get_config_path, load_config
+from utils.logger import setup_logger, get_config_path
+from utils.config_loader_secure import load_config_secure
 from utils.image_utils import rgb_to_grayscale
 
 logger = setup_logger("QUANTUM_ENGINE", get_config_path())
@@ -653,7 +654,7 @@ def encrypt_all_blocks(
             - all_encryption_info: List of encryption info dicts per block.
     """
     if config is None:
-        config = load_config()
+        config = load_config_secure()
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo_path = os.path.join(project_root, config["repos"]["quantum"]["path"])
@@ -749,7 +750,7 @@ def decrypt_all_blocks(
         List of decrypted 8x8 blocks.
     """
     if config is None:
-        config = load_config()
+        config = load_config_secure()
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo_path = os.path.join(project_root, config["repos"]["quantum"]["path"])

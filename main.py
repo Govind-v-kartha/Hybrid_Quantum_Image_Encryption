@@ -38,7 +38,9 @@ if PROJECT_ROOT not in sys.path:
 # Child processes re-import this module; the guard prevents them from
 # running initialization code that depends on project-level modules.
 if __name__ != "__mp_main__":
-    from utils.logger import setup_logger, load_config
+    from utils.logger import setup_logger
+    from utils.config_loader_secure import load_config_secure
+    from utils.security_manager import verify_all_permissions
     logger = setup_logger("MAIN", os.path.join(PROJECT_ROOT, "config", "config.json"))
 
 
@@ -103,7 +105,7 @@ def verify_repositories() -> bool:
     Raises:
         RuntimeError: If any repository is missing.
     """
-    config = load_config()
+    config = load_config_secure()
 
     repos = {
         "FlexiMo (AI Segmentation)": config["repos"]["fleximo"]["path"],
@@ -159,7 +161,7 @@ def mode_encrypt(args):
     """Run encryption mode."""
     from workflows.encrypt_workflow import run_encryption
 
-    config = load_config()
+    config = load_config_secure()
 
     # Determine input image(s)
     if args.input:
@@ -197,7 +199,7 @@ def mode_decrypt(args):
     """Run decryption mode."""
     from workflows.decrypt_workflow import run_decryption
 
-    config = load_config()
+    config = load_config_secure()
 
     # Find metadata file
     if args.metadata:
@@ -248,7 +250,7 @@ def mode_analyze(args):
     """Run analysis mode."""
     from workflows.analyze_workflow import run_analysis
 
-    config = load_config()
+    config = load_config_secure()
 
     if args.input:
         image_path = args.input
@@ -284,7 +286,7 @@ def mode_verify(args):
 
     if not args.decrypted:
         # Try to find in output/decrypted/
-        config = load_config()
+        config = load_config_secure()
         decrypted_dir = os.path.join(PROJECT_ROOT, config["paths"]["output_dir"], "decrypted")
         if os.path.isdir(decrypted_dir):
             dec_files = [f for f in os.listdir(decrypted_dir) if f.startswith("decrypted_")]
@@ -329,7 +331,7 @@ def mode_full_pipeline(args):
     from workflows.decrypt_workflow import run_decryption
     from workflows.verify_workflow import run_verification
 
-    config = load_config()
+    config = load_config_secure()
     total_start = __import__("time").time()
 
     # ── Resolve input image ──────────────────────────────────────────
@@ -511,8 +513,14 @@ Advanced (single mode):
     except RuntimeError as e:
         logger.error(f"Dependency check failed: {e}")
         sys.exit(1)
+    
+    # Load secure config with environment variable substitution
+    config = load_config_secure()
     verify_structure()
     verify_repositories()
+    
+    # Verify file permissions for security-sensitive files
+    verify_all_permissions(PROJECT_ROOT)
 
     # Dispatch to mode
     mode_handlers = {

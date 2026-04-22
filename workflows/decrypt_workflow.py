@@ -18,7 +18,8 @@ import hashlib
 import numpy as np
 from datetime import datetime
 
-from utils.logger import setup_logger, get_config_path, load_config
+from utils.logger import setup_logger, get_config_path
+from utils.config_loader_secure import load_config_secure
 from utils.image_utils import load_image, save_image, read_png_metadata, verify_png_dependencies
 from utils.crypto_utils import load_key_material, derive_quantum_seeds, derive_all_block_seeds, decode_bytes_b64
 from utils.crypto_utils_pqc import (
@@ -59,7 +60,7 @@ def run_decryption(
     total_start = time.time()
 
     if config is None:
-        config = load_config()
+        config = load_config_secure()
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -152,7 +153,7 @@ def run_decryption(
         logger.info("\n>>> STEP 0: Post-Quantum ML-KEM Key Recovery (FIX #1)...")
         try:
             # Load recipient's ML-KEM private key from config
-            config = load_config()
+            config = load_config_secure()
             recipient_private_key_path = config.get("post_quantum", {}).get("recipient_private_key_path")
             
             if not recipient_private_key_path or not os.path.exists(recipient_private_key_path):
@@ -187,7 +188,7 @@ def run_decryption(
             protected_key_path = key_protection.get("protected_keys_file")
             if protected_key_path and os.path.exists(protected_key_path):
                 # Get passphrase from config
-                config = load_config()
+                config = load_config_secure()
                 key_passphrase = config.get("key_protection", {}).get("passphrase")
                 if not key_passphrase:
                     raise ValueError("Key passphrase not configured. Cannot decrypt protected keys.")

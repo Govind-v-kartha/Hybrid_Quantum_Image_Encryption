@@ -19,7 +19,8 @@ import hashlib
 import numpy as np
 from datetime import datetime
 
-from utils.logger import setup_logger, get_config_path, load_config
+from utils.logger import setup_logger, get_config_path
+from utils.config_loader_secure import load_config_secure
 from utils.image_utils import (
     load_image,
     save_image,
@@ -77,7 +78,7 @@ def run_encryption(
     total_start = time.time()
 
     if config is None:
-        config = load_config()
+        config = load_config_secure()
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if output_dir is None:
