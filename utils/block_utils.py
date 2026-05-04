@@ -4,7 +4,7 @@ Handles ROI blocking, padding, block mapping, and reconstruction.
 """
 
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple
 
 from utils.logger import setup_logger, get_config_path
 
@@ -29,7 +29,7 @@ def create_roi_blocks(
 
     Returns:
         Tuple of:
-            - blocks: List of 8x8x3 numpy arrays (the blocks).
+            - blocks: List of 32x32x3 numpy arrays (the blocks).
             - block_map: List of dicts with position/padding metadata per block.
             - roi_bbox: Array [y_min, x_min, y_max, x_max] of the ROI bounding box.
     """
@@ -119,7 +119,7 @@ def create_roi_blocks(
 
             if is_padded:
                 padded_count += 1
-                # Zero-pad to 8x8
+                # Zero-pad to 32x32
                 channels = raw_block.shape[2] if raw_block.ndim == 3 else 1
                 if raw_block.ndim == 3:
                     padded_block = np.zeros(
@@ -130,7 +130,7 @@ def create_roi_blocks(
                         (BLOCK_SIZE, BLOCK_SIZE), dtype=raw_block.dtype
                     )
                 padded_block[:actual_h, :actual_w] = raw_block
-                block = padded_block
+                block = padded_block  # zero-pad to 32x32
             else:
                 block = raw_block
 
@@ -171,10 +171,10 @@ def reconstruct_from_blocks(
     original_shape: Tuple[int, int, int],
 ) -> np.ndarray:
     """
-    Reconstruct the ROI region from 8x8 blocks using the block map.
+    Reconstruct the ROI region from 32x32 blocks using the block map.
 
     Args:
-        blocks: List of 8x8(x3) numpy arrays.
+        blocks: List of 32x32(x3) numpy arrays.
         block_map: List of dicts with position/padding metadata.
         roi_bbox: Array [y_min, x_min, y_max, x_max].
         original_shape: Shape of the original image (H, W, C).

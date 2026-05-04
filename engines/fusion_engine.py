@@ -5,7 +5,6 @@ Handles the fusion of quantum-encrypted ROI blocks and classically-encrypted
 background into a single encrypted image, and the reverse unfusion for decryption.
 """
 
-import os
 import numpy as np
 from typing import List, Tuple
 
@@ -19,20 +18,18 @@ def fuse_encrypted_image(
     encrypted_blocks: List[np.ndarray],
     block_map: List[dict],
     encrypted_background_image: np.ndarray,
-    roi_mask: np.ndarray,
     original_shape: tuple,
 ) -> np.ndarray:
     """
     Combine encrypted ROI blocks and encrypted background into a single image.
 
-    Places encrypted 8x8 blocks at their original positions (from block_map)
+    Places encrypted 32x32 blocks at their original positions (from block_map)
     and fills remaining pixels with encrypted background data.
 
     Args:
-        encrypted_blocks: List of encrypted 8x8 blocks (grayscale, uint8).
+        encrypted_blocks: List of encrypted 32x32 blocks (grayscale, uint8).
         block_map: Block metadata with positions.
         encrypted_background_image: Encrypted background image (H, W, 3).
-        roi_mask: Binary ROI mask (H, W).
         original_shape: Original image shape (H, W, 3).
 
     Returns:
@@ -42,7 +39,7 @@ def fuse_encrypted_image(
     logger.info("STARTING FUSION OF ENCRYPTED COMPONENTS")
     logger.info("=" * 60)
 
-    H, W, C = original_shape
+    H, W, _ = original_shape
 
     # Start with the encrypted background
     fused_image = encrypted_background_image.copy()
@@ -86,7 +83,6 @@ def fuse_encrypted_image(
 def unfuse_encrypted_image(
     fused_image: np.ndarray,
     block_map: List[dict],
-    roi_mask: np.ndarray,
 ) -> Tuple[List[np.ndarray], np.ndarray]:
     """
     Separate a fused encrypted image back into ROI blocks and background.
@@ -94,23 +90,18 @@ def unfuse_encrypted_image(
     Args:
         fused_image: Fused encrypted image (H, W, 3).
         block_map: Block metadata with positions.
-        roi_mask: Binary ROI mask (H, W).
 
     Returns:
         Tuple of:
-            - encrypted_blocks: List of 8x8 encrypted blocks (grayscale).
+            - encrypted_blocks: List of 32x32 encrypted blocks (grayscale).
             - encrypted_background: Background image (H, W, 3).
     """
     logger.info("Unfusing encrypted image into components...")
-
-    H, W = fused_image.shape[:2]
 
     # Extract encrypted ROI blocks
     encrypted_blocks = []
     for bmap in block_map:
         x, y = int(bmap["position"][0]), int(bmap["position"][1])
-        y_end = min(y + BLOCK_SIZE, H)
-        x_end = min(x + BLOCK_SIZE, W)
 
         block = fused_image[y : y + BLOCK_SIZE, x : x + BLOCK_SIZE].copy()
 

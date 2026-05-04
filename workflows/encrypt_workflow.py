@@ -296,7 +296,7 @@ def run_encryption(
     )
 
     fused_image = fuse_encrypted_image(
-        encrypted_blocks, block_map, encrypted_bg_visual, roi_mask, original_shape
+        encrypted_blocks, block_map, encrypted_bg_visual, original_shape
     )
 
     # Save fused encrypted image

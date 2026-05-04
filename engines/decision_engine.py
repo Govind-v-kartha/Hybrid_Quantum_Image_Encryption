@@ -1,7 +1,7 @@
 """
 Decision Engine - ROI Block Division.
 
-Handles dividing the ROI region into 8x8 pixel blocks for quantum encryption.
+Handles dividing the ROI region into 32x32 pixel blocks for quantum encryption.
 Manages padding, block mapping, and provides reconstruction capabilities.
 """
 
@@ -12,7 +12,6 @@ from utils.logger import setup_logger, get_config_path
 from utils.block_utils import (
     create_roi_blocks,
     reconstruct_from_blocks,
-    place_roi_on_image,
     BLOCK_SIZE,
 )
 
@@ -23,7 +22,7 @@ def divide_roi_into_blocks(
     image: np.ndarray, roi_mask: np.ndarray
 ) -> Tuple[List[np.ndarray], List[dict], np.ndarray]:
     """
-    Divide the ROI of an image into 8x8 blocks for quantum encryption.
+    Divide the ROI of an image into 32x32 blocks for quantum encryption.
 
     This is the main entry point for block division. It validates inputs,
     creates blocks, and logs comprehensive information about the result.
@@ -34,7 +33,7 @@ def divide_roi_into_blocks(
 
     Returns:
         Tuple of:
-            - blocks: List of 8x8x3 NumPy arrays.
+            - blocks: List of 32x32x3 NumPy arrays.
             - block_map: List of metadata dicts for each block.
             - roi_bbox: Array [y_min, x_min, y_max, x_max].
     """
@@ -71,7 +70,7 @@ def divide_roi_into_blocks(
         f"{padded_blocks} blocks padded"
     )
 
-    # Verify all blocks are 8x8
+    # Verify all blocks are 32x32
     for i, block in enumerate(blocks):
         assert block.shape[0] == BLOCK_SIZE and block.shape[1] == BLOCK_SIZE, (
             f"Block {i} has shape {block.shape}, expected ({BLOCK_SIZE}, {BLOCK_SIZE}, ...)"
@@ -97,7 +96,7 @@ def _verify_block_reconstruction(
 
     Args:
         original_image: Original image.
-        blocks: List of 8x8 blocks.
+        blocks: List of 32x32 blocks.
         block_map: Block metadata.
         roi_bbox: ROI bounding box.
     """
@@ -136,7 +135,7 @@ def reconstruct_roi_from_blocks(
     Reconstruct the ROI region from decrypted blocks.
 
     Args:
-        blocks: List of decrypted 8x8 blocks.
+        blocks: List of decrypted 32x32 blocks.
         block_map: Block metadata with positions and padding info.
         roi_bbox: ROI bounding box.
         original_shape: Shape of the original image.

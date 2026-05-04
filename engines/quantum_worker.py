@@ -75,13 +75,20 @@ def _ensure_modules(repo_path: str) -> dict:
 def _generate_keys_for_block(quantum_seeds, block_id, block_size, modules, channel_id=0):
     """Generate chaotic keys for a single block and channel."""
     henon_map = modules["henon_map"]
-    x0_base = quantum_seeds["x0"]
-    y0_base = quantum_seeds["y0"]
 
-    # Match quantum_engine.py key generation (with channel_id)
-    np.random.seed(int(x0_base * 1e6) + block_id * 10 + channel_id)
-    x0 = max(0.01, min(0.99, x0_base + block_id * 0.00001 + channel_id * 0.000003))
-    y0 = max(0.01, min(0.99, y0_base + block_id * 0.00001 + channel_id * 0.000003))
+    # Use per-block seed from ratchet mechanism when available (derive_all_block_seeds format)
+    if "block_seeds" in quantum_seeds and block_id < len(quantum_seeds["block_seeds"]):
+        seed_data = quantum_seeds["block_seeds"][block_id]
+        x0_base = seed_data["x0"]
+        y0_base = seed_data["y0"]
+    else:
+        x0_base = quantum_seeds.get("x0", 0.5)
+        y0_base = quantum_seeds.get("y0", 0.5)
+
+    # Perturb based on channel_id only (block seed already unique from ratchet)
+    np.random.seed(int(x0_base * 1e6) + channel_id)
+    x0 = max(0.01, min(0.99, x0_base + channel_id * 0.000003))
+    y0 = max(0.01, min(0.99, y0_base + channel_id * 0.000003))
 
     alpha = float(quantum_seeds.get("alpha", 1.4))
     beta = float(quantum_seeds.get("beta", 0.3))

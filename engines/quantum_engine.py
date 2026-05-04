@@ -2,7 +2,7 @@
 Quantum Engine - NEQR Quantum Encryption using Repository B.
 
 This engine integrates the NEQR (Novel Enhanced Quantum Representation) quantum
-encryption from Repository B. Each 8x8 ROI block is encoded into a quantum circuit,
+encryption from Repository B. Each 32x32 ROI block is encoded into a quantum circuit,
 scrambled using quantum gates, and encrypted using DNA encoding with chaotic keys.
 
 This is TRUE quantum simulation using Qiskit's AerSimulator — NOT mathematical
@@ -16,16 +16,20 @@ import sys
 import time
 import warnings
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-import multiprocessing
 
 # Suppress Henon map NaN/Inf cast warnings — expected for chaotic maps
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value")
 
 from utils.logger import setup_logger, get_config_path
 from utils.config_loader_secure import load_config_secure
-from utils.image_utils import rgb_to_grayscale
+
+try:
+    from tqdm.auto import tqdm as _tqdm
+    _TQDM_AVAILABLE = True
+except ImportError:
+    _TQDM_AVAILABLE = False
 
 logger = setup_logger("QUANTUM_ENGINE", get_config_path())
 
@@ -93,18 +97,18 @@ def _import_quantum_modules(repo_path: str):
     _quantum_repo_path = repo_path
 
     try:
-        from quantum.neqr import encode_neqr, reconstruct_neqr_image
-        from quantum.scrambling import (
+        from quantum.neqr import encode_neqr, reconstruct_neqr_image  # type: ignore[import]
+        from quantum.scrambling import (  # type: ignore[import]
             quantum_scramble,
             quantum_permutation,
             reverse_quantum_scrambling,
             reverse_quantum_permutation,
         )
-        from chaos.qrng import qrng
-        from chaos.henon import henon_map
-        from chaos.hybrid_map import generate_chaotic_key_image
-        from dna.dna_encode import dna_encode
-        from dna.dna_decode import dna_decrypt
+        from chaos.qrng import qrng  # type: ignore[import]
+        from chaos.henon import henon_map  # type: ignore[import]
+        from chaos.hybrid_map import generate_chaotic_key_image  # type: ignore[import]
+        from dna.dna_encode import dna_encode  # type: ignore[import]
+        from dna.dna_decode import dna_decrypt  # type: ignore[import]
 
         logger.info("All quantum repo modules imported successfully:")
         logger.info("  - quantum.neqr: encode_neqr, reconstruct_neqr_image")
@@ -153,7 +157,6 @@ def _verify_qiskit_backend():
 
 def _generate_keys_for_block(
     block_seed: Tuple[float, float],
-    block_id: int,
     block_size: int,
     modules: dict,
     channel_id: int = 0,
@@ -259,7 +262,7 @@ def encrypt_block_quantum(
     for ch_idx, channel in enumerate(channels):
         # Generate unique keys for this block + channel using per-block seed
         bpk, ksk = _generate_keys_for_block(
-            block_seed, block_id, block_size, modules, channel_id=ch_idx
+            block_seed, block_size, modules, channel_id=ch_idx
         )
 
         # NEQR encode
@@ -330,7 +333,6 @@ def encrypt_block_quantum(
 def decrypt_block_quantum(
     encrypted_block: np.ndarray,
     block_id: int,
-    quantum_seeds: dict,
     encryption_info: dict,
     modules: dict,
     shots: int = 16384,
@@ -429,9 +431,23 @@ def decrypt_block_quantum(
     return decrypted_block
 
 
+def _make_pbar(total: int, desc: str, colour: str):
+    """Create a tqdm progress bar, or None if tqdm is not installed."""
+    if not _TQDM_AVAILABLE:
+        return None
+    return _tqdm(
+        total=total,
+        desc=desc,
+        unit="block",
+        dynamic_ncols=True,
+        colour=colour,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}, {rate_fmt}]",
+    )
+
+
 def _encrypt_blocks_parallel(
     blocks, encrypted_blocks, all_encryption_info,
-    quantum_seeds, repo_path, shots, total_start, log_interval, logger
+    quantum_seeds, repo_path, shots, total_start, log_interval, logger, pbar=None
 ) -> bool:
     """
     Try parallel encryption with ProcessPoolExecutor, then ThreadPoolExecutor.
@@ -499,9 +515,18 @@ def _encrypt_blocks_parallel(
                                 break
                             logger.error(f"Block {bid} encrypt error: {e}")
                             failed += 1
-                            encrypted_blocks[bid] = np.zeros((8, 8), dtype=np.uint8)
+                            encrypted_blocks[bid] = np.zeros((32, 32, 3), dtype=np.uint8)
                             all_encryption_info[bid] = {"block_id": bid, "error": err_msg}
                         completed += 1
+
+                        if pbar is not None:
+                            elapsed = time.time() - total_start
+                            avg = elapsed / completed
+                            eta = avg * (total_blocks - completed)
+                            pbar.set_postfix_str(
+                                f"avg {avg:.1f}s/blk | ETA {_format_time(eta)}", refresh=False
+                            )
+                            pbar.update(1)
 
                         if completed % log_interval == 0 or completed == total_blocks:
                             elapsed = time.time() - total_start
@@ -544,7 +569,7 @@ def _encrypt_blocks_parallel(
 
 def _decrypt_blocks_parallel(
     encrypted_blocks, decrypted_blocks, quantum_seeds,
-    all_encryption_info, repo_path, shots, total_start, log_interval, logger
+    all_encryption_info, repo_path, shots, total_start, log_interval, logger, pbar=None
 ) -> bool:
     """
     Try parallel decryption. Returns True if successful, False for sequential fallback.
@@ -603,8 +628,17 @@ def _decrypt_blocks_parallel(
                                 pool_broken = True
                                 break
                             logger.error(f"Block {bid} decrypt error: {e}")
-                            decrypted_blocks[bid] = np.zeros((8, 8), dtype=np.uint8)
+                            decrypted_blocks[bid] = np.zeros((32, 32, 3), dtype=np.uint8)
                         completed += 1
+
+                        if pbar is not None:
+                            elapsed = time.time() - total_start
+                            avg = elapsed / completed
+                            eta = avg * (total_blocks - completed)
+                            pbar.set_postfix_str(
+                                f"avg {avg:.1f}s/blk | ETA {_format_time(eta)}", refresh=False
+                            )
+                            pbar.update(1)
 
                         if completed % log_interval == 0 or completed == total_blocks:
                             elapsed = time.time() - total_start
@@ -644,13 +678,13 @@ def encrypt_all_blocks(
     Encrypt all ROI blocks using quantum encryption.
 
     Args:
-        blocks: List of 8x8x3 blocks.
+        blocks: List of 32x32x3 blocks.
         quantum_seeds: Seed parameters for key generation.
         config: Configuration dictionary.
 
     Returns:
         Tuple of:
-            - encrypted_blocks: List of encrypted 8x8 blocks.
+            - encrypted_blocks: List of encrypted 32x32 blocks.
             - all_encryption_info: List of encryption info dicts per block.
     """
     if config is None:
@@ -681,12 +715,15 @@ def encrypt_all_blocks(
     completed_count = 0
     log_interval = max(1, total_blocks // 20)
 
+    pbar = _make_pbar(total_blocks, "Encrypting", "green")
+
     # ── Try parallel, then fall back to sequential ──
     used_parallel = False
     if total_blocks > 10:
         used_parallel = _encrypt_blocks_parallel(
             blocks, encrypted_blocks, all_encryption_info,
-            quantum_seeds, repo_path, shots, total_start, log_interval, logger
+            quantum_seeds, repo_path, shots, total_start, log_interval, logger,
+            pbar=pbar,
         )
 
     if not used_parallel:
@@ -695,9 +732,11 @@ def encrypt_all_blocks(
         for i, block in enumerate(blocks):
             if encrypted_blocks[i] is not None:
                 completed_count += 1
+                if pbar is not None:
+                    pbar.update(1)
                 continue  # already done by partial parallel run
             block_start = time.time()
-            
+
             # Get per-block seed from ratchet mechanism (FIX #5)
             if "block_seeds" in quantum_seeds and i < len(quantum_seeds["block_seeds"]):
                 block_seed_data = quantum_seeds["block_seeds"][i]
@@ -705,7 +744,7 @@ def encrypt_all_blocks(
             else:
                 # Fallback to old behavior if block_seeds not present
                 block_seed = (quantum_seeds.get("x0", 0.5), quantum_seeds.get("y0", 0.5))
-            
+
             enc_block, enc_info = encrypt_block_quantum(
                 block, i, block_seed, modules, shots=shots
             )
@@ -715,6 +754,14 @@ def encrypt_all_blocks(
             block_time = time.time() - block_start
             elapsed_total = time.time() - total_start
 
+            if pbar is not None:
+                avg_time = elapsed_total / completed_count
+                eta = avg_time * (total_blocks - completed_count)
+                pbar.set_postfix_str(
+                    f"{block_time:.1f}s/blk | ETA {_format_time(eta)}", refresh=False
+                )
+                pbar.update(1)
+
             if completed_count % log_interval == 0 or i == 0 or i == total_blocks - 1:
                 pct = 100 * completed_count / total_blocks
                 avg_time = elapsed_total / completed_count
@@ -723,6 +770,9 @@ def encrypt_all_blocks(
                     f"Encrypting block {i + 1}/{total_blocks} with shots={shots}... "
                     f"({pct:.1f}%) Block time: {block_time:.2f}s, ETA: {_format_time(eta)}"
                 )
+
+    if pbar is not None:
+        pbar.close()
 
     total_time = time.time() - total_start
     logger.info(f"Quantum encryption complete: {total_blocks} blocks in {_format_time(total_time)}")
@@ -741,13 +791,13 @@ def decrypt_all_blocks(
     Decrypt all ROI blocks using reverse quantum operations.
 
     Args:
-        encrypted_blocks: List of encrypted 8x8 blocks.
+        encrypted_blocks: List of encrypted 32x32 blocks.
         quantum_seeds: Seed parameters.
         all_encryption_info: Encryption info for each block.
         config: Configuration dictionary.
 
     Returns:
-        List of decrypted 8x8 blocks.
+        List of decrypted 32x32 blocks.
     """
     if config is None:
         config = load_config_secure()
@@ -773,12 +823,15 @@ def decrypt_all_blocks(
     completed_count = 0
     log_interval = max(1, total_blocks // 20)
 
+    pbar = _make_pbar(total_blocks, "Decrypting", "cyan")
+
     # ── Try parallel, then fall back to sequential ──
     used_parallel = False
     if total_blocks > 10:
         used_parallel = _decrypt_blocks_parallel(
             encrypted_blocks, decrypted_blocks, quantum_seeds,
-            all_encryption_info, repo_path, shots, total_start, log_interval, logger
+            all_encryption_info, repo_path, shots, total_start, log_interval, logger,
+            pbar=pbar,
         )
 
     if not used_parallel:
@@ -786,15 +839,25 @@ def decrypt_all_blocks(
         for i, enc_block in enumerate(encrypted_blocks):
             if decrypted_blocks[i] is not None:
                 completed_count += 1
+                if pbar is not None:
+                    pbar.update(1)
                 continue
             block_start = time.time()
             dec_block = decrypt_block_quantum(
-                enc_block, i, quantum_seeds, all_encryption_info[i], modules, shots=shots
+                enc_block, i, all_encryption_info[i], modules, shots=shots
             )
             decrypted_blocks[i] = dec_block
             completed_count += 1
             block_time = time.time() - block_start
             elapsed_total = time.time() - total_start
+
+            if pbar is not None:
+                avg_time = elapsed_total / completed_count
+                eta = avg_time * (total_blocks - completed_count)
+                pbar.set_postfix_str(
+                    f"{block_time:.1f}s/blk | ETA {_format_time(eta)}", refresh=False
+                )
+                pbar.update(1)
 
             if completed_count % log_interval == 0 or i == 0 or i == total_blocks - 1:
                 pct = 100 * completed_count / total_blocks
@@ -804,6 +867,9 @@ def decrypt_all_blocks(
                     f"Decrypting block {i + 1}/{total_blocks} with shots={shots}... "
                     f"({pct:.1f}%) Block time: {block_time:.2f}s, ETA: {_format_time(eta)}"
                 )
+
+    if pbar is not None:
+        pbar.close()
 
     total_time = time.time() - total_start
     logger.info(f"Quantum decryption complete: {total_blocks} blocks in {_format_time(total_time)}")
